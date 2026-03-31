@@ -111,11 +111,11 @@ const ERROR_TOAST_CONFIG: Record<
   },
   AUTH_FAILURE: {
     title: "Authentication failed",
-    description: "Your session may have expired. Try logging in again.",
+    description: "Your ZAI API key may be missing or expired. Update it in Settings and try again.",
   },
   USAGE_POLICY_VIOLATION: {
-    title: "Anthropic API hiccup",
-    description: "The request was rejected by Anthropic's servers. Please try again shortly.",
+    title: "ZAI API hiccup",
+    description: "The request was rejected by ZAI's servers. Please try again shortly.",
   },
   // SDK_ERROR and other unknown errors use chunk.errorText for description
 }

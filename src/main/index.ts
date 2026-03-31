@@ -580,7 +580,7 @@ if (gotTheLock) {
     // This helps diagnose first-install issues where the protocol isn't recognized yet
     verifyProtocolRegistration()
 
-    // Get Claude Code version for About panel
+    // Get bundled runtime version for About panel
     let claudeCodeVersion = "unknown"
     try {
       const isDev = !app.isPackaged
@@ -593,14 +593,14 @@ if (gotTheLock) {
         claudeCodeVersion = versionContent.split("\n")[0]?.trim() || "unknown"
       }
     } catch (error) {
-      console.warn("[App] Failed to read Claude Code version:", error)
+      console.warn("[App] Failed to read bundled runtime version:", error)
     }
 
-    // Set About panel options with Claude Code version
+    // Set About panel options with bundled runtime version
     app.setAboutPanelOptions({
       applicationName: "ZAI Agent",
       applicationVersion: app.getVersion(),
-      version: `Claude Code ${claudeCodeVersion}`,
+      version: `GLMX Runtime ${claudeCodeVersion}`,
       copyright: "Copyright © 2026 ZAI",
     })
 
