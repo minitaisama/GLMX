@@ -121,6 +121,7 @@ import {
 import {
   CLAUDE_MODELS,
   CODEX_MODELS,
+  ENABLE_CODEX_PROVIDER,
   type CodexThinkingLevel,
 } from "../lib/models"
 // import type { PlanType } from "@/lib/config/subscription-plans"
@@ -168,7 +169,7 @@ function useAvailableModels() {
 const agents = [
   { id: "claude-code", name: "Claude Code", hasModels: true },
   { id: "cursor", name: "Cursor CLI", disabled: true },
-  { id: "codex", name: "OpenAI Codex" },
+  { id: "codex", name: "OpenAI Codex", disabled: !ENABLE_CODEX_PROVIDER },
 ]
 
 interface NewChatFormProps {
@@ -1907,11 +1908,12 @@ export function NewChatForm({
                             isConnected: isClaudeConnected,
                             thinkingEnabled,
                             onThinkingChange: setThinkingEnabled,
-                          }}
-                          codex={{
-                            models: codexUiModels,
-                            selectedModelId: selectedCodexModel.id,
-                            onSelectModel: (modelId) => {
+                      }}
+                      codex={{
+                        isEnabled: ENABLE_CODEX_PROVIDER,
+                        models: codexUiModels,
+                        selectedModelId: selectedCodexModel.id,
+                        onSelectModel: (modelId) => {
                               const model = codexUiModels.find((item) => item.id === modelId)
                               if (!model) return
                               const nextThinking = model.thinkings.includes(

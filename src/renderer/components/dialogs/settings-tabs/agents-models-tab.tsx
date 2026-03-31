@@ -20,6 +20,7 @@ import { CLAUDE_MODELS, CODEX_MODELS } from "../../../features/agents/lib/models
 import { trpc } from "../../../lib/trpc"
 import { Badge } from "../../ui/badge"
 import { Button } from "../../ui/button"
+import { ButtonGroup } from "../../ui/button-group"
 import {
   Collapsible,
   CollapsibleContent,
@@ -41,6 +42,9 @@ import {
   SelectValue,
 } from "../../ui/select"
 import { Switch } from "../../ui/switch"
+import {
+  ZAI_MODEL_SLOT_PRESETS,
+} from "../../../../shared/zai-model-presets"
 
 // Hook to detect narrow screen
 function useIsNarrowScreen(): boolean {
@@ -65,7 +69,23 @@ const EMPTY_CONFIG: CustomClaudeConfig = {
   baseUrl: "",
 }
 
-const ZAI_MODELS = ["glm-5-turbo", "glm-5.1", "glm-4.7", "glm-4.5-air"]
+const ZAI_MODELS = ["glm-5-turbo", "glm-5.1", "glm-5", "glm-4.7", "glm-4.5-air"]
+
+function applyModelSlotPreset(
+  presetId: string,
+  handlers: {
+    setOpusModel: (value: string) => void
+    setSonnetModel: (value: string) => void
+    setHaikuModel: (value: string) => void
+  },
+) {
+  const preset = ZAI_MODEL_SLOT_PRESETS.find((item) => item.id === presetId)
+  if (!preset) return
+
+  handlers.setOpusModel(preset.models.opus)
+  handlers.setSonnetModel(preset.models.sonnet)
+  handlers.setHaikuModel(preset.models.haiku)
+}
 
 // Account row component
 function AccountRow({
@@ -594,6 +614,37 @@ export function AgentsModelsTab() {
               value={zaiConfig?.baseUrl || "https://api.z.ai/api/anthropic"}
               disabled
             />
+          </div>
+
+          <p className="text-xs text-muted-foreground">
+            For GLM Coding Plan, keep the Base URL on the Anthropic-compatible
+            endpoint above. Switch the actual GLM family by changing the Heavy,
+            Standard, and Fast slots below. Example mapping: `glm-5.1`,
+            `glm-5`, `glm-5-turbo`.
+          </p>
+
+          <div className="space-y-2">
+            <Label className="text-sm font-medium">Quick presets</Label>
+            <ButtonGroup className="flex w-full [&>button]:flex-1">
+              {ZAI_MODEL_SLOT_PRESETS.map((preset) => (
+                <Button
+                  key={preset.id}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    applyModelSlotPreset(preset.id, {
+                      setOpusModel: setZaiOpusModel,
+                      setSonnetModel: setZaiSonnetModel,
+                      setHaikuModel: setZaiHaikuModel,
+                    })
+                  }
+                  title={preset.description}
+                >
+                  {preset.label}
+                </Button>
+              ))}
+            </ButtonGroup>
           </div>
 
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">

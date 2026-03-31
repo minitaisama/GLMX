@@ -137,6 +137,11 @@ import { Checkbox } from "../../components/ui/checkbox"
 import { useHaptic } from "./hooks/use-haptic"
 import { TypewriterText } from "../../components/ui/typewriter-text"
 import { exportChat, copyChat, type ExportFormat } from "../agents/lib/export-chat"
+import {
+  buildContextPreview,
+  buildRenameSuggestion,
+  extractRenameContext,
+} from "../agents/utils/rename-context"
 
 // Feedback URL: uses env variable for hosted version, falls back to public Discord for open source
 const FEEDBACK_URL =
@@ -2189,6 +2194,23 @@ export function AgentsSidebar({
     setRenameDialogOpen(true)
   }, [])
 
+  const { data: renamingChatData } = trpc.chats.get.useQuery(
+    renamingChat?.id ? { id: renamingChat.id } : { id: "" },
+    {
+      enabled: renameDialogOpen && !!renamingChat?.id && !renamingChat?.isRemote,
+      staleTime: 30_000,
+    },
+  )
+
+  const renameDialogSuggestion = useMemo(() => {
+    const context = extractRenameContext(renamingChatData?.subChats?.[0]?.messages)
+
+    return {
+      contextPreview: buildContextPreview(context),
+      suggestedName: buildRenameSuggestion(context, renamingChat?.name),
+    }
+  }, [renamingChat?.name, renamingChatData])
+
   const handleRenameSave = async (newName: string) => {
     if (!renamingChat) return
 
@@ -3515,6 +3537,10 @@ export function AgentsSidebar({
         onSave={handleRenameSave}
         currentName={renamingChat?.name || ""}
         isLoading={renameLoading}
+        title="Rename workspace"
+        placeholder="Workspace name"
+        contextPreview={renameDialogSuggestion.contextPreview}
+        suggestedName={renameDialogSuggestion.suggestedName}
       />
 
       {/* Confirm Archive Dialog */}

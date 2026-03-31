@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
 import { Button } from "../../components/ui/button"
+import { ButtonGroup } from "../../components/ui/button-group"
 import { Input } from "../../components/ui/input"
 import { Label } from "../../components/ui/label"
 import { Logo } from "../../components/ui/logo"
@@ -14,8 +15,9 @@ import {
   SelectValue,
 } from "../../components/ui/select"
 import { trpc } from "../../lib/trpc"
+import { ZAI_MODEL_SLOT_PRESETS } from "../../../shared/zai-model-presets"
 
-const ZAI_MODELS = ["glm-5-turbo", "glm-5.1", "glm-4.7", "glm-4.5-air"]
+const ZAI_MODELS = ["glm-5-turbo", "glm-5.1", "glm-5", "glm-4.7", "glm-4.5-air"]
 const DEFAULT_BASE_URL = "https://api.z.ai/api/anthropic"
 
 function isLikelyZaiKey(value: string) {
@@ -70,6 +72,15 @@ export function ZaiOnboardingPage({
     }
   }
 
+  const applyModelSlotPreset = (presetId: string) => {
+    const preset = ZAI_MODEL_SLOT_PRESETS.find((item) => item.id === presetId)
+    if (!preset) return
+
+    setOpusModel(preset.models.opus)
+    setSonnetModel(preset.models.sonnet)
+    setHaikuModel(preset.models.haiku)
+  }
+
   return (
     <div className="h-screen w-screen flex flex-col items-center justify-center bg-background select-none px-4">
       <div
@@ -87,7 +98,7 @@ export function ZaiOnboardingPage({
           <div className="space-y-1">
             <h1 className="text-base font-semibold tracking-tight">ZAI Agent</h1>
             <p className="text-sm text-muted-foreground">
-              Nhap ZAI API key de bat dau voi GLM models.
+              Nhap Z.AI API key de bat dau voi Claude Code-compatible GLM routing.
             </p>
           </div>
         </div>
@@ -146,8 +157,28 @@ export function ZaiOnboardingPage({
         {showAdvanced ? (
           <div className="border border-border rounded-lg p-4 space-y-4">
             <p className="text-xs text-muted-foreground">
-              Claude Code se doc mapping model tu ~/.claude/settings.json.
+              Claude Code se doc Base URL va 3 model slots tu ~/.claude/settings.json.
+              De dung GLM Coding Plan, giu Base URL la https://api.z.ai/api/anthropic
+              va map model nhu glm-5.1 / glm-5 / glm-5-turbo tuy nhu cau.
             </p>
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Quick presets</Label>
+              <ButtonGroup className="flex w-full [&>button]:flex-1">
+                {ZAI_MODEL_SLOT_PRESETS.map((preset) => (
+                  <Button
+                    key={preset.id}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => applyModelSlotPreset(preset.id)}
+                    disabled={saveConfig.isPending}
+                    title={preset.description}
+                  >
+                    {preset.label}
+                  </Button>
+                ))}
+              </ButtonGroup>
+            </div>
             <div className="space-y-2">
               <Label className="text-sm font-medium">Heavy tasks</Label>
               <Select value={opusModel} onValueChange={setOpusModel}>

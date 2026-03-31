@@ -74,6 +74,7 @@ interface AgentModelSelectorProps {
     onThinkingChange: (enabled: boolean) => void
   }
   codex: {
+    isEnabled: boolean
     models: CodexModelOption[]
     selectedModelId: string
     onSelectModel: (modelId: string) => void
@@ -351,12 +352,15 @@ export function AgentModelSelector({
       }
     }
 
-    for (const m of codex.models) {
-      items.push({ type: "codex", model: m })
+    const includeCodexModels = codex.isEnabled || selectedAgentId === "codex"
+    if (includeCodexModels) {
+      for (const m of codex.models) {
+        items.push({ type: "codex", model: m })
+      }
     }
 
     return items
-  }, [claude, codex])
+  }, [claude, codex, selectedAgentId])
 
   // Filter by search
   const filteredModels = useMemo(() => {

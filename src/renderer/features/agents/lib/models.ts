@@ -1,10 +1,12 @@
 export const CLAUDE_MODELS = [
-  { id: "opus", name: "Opus", version: "4.6" },
-  { id: "sonnet", name: "Sonnet", version: "4.6" },
-  { id: "haiku", name: "Haiku", version: "4.5" },
+  { id: "opus", name: "Heavy", version: "slot" },
+  { id: "sonnet", name: "Standard", version: "slot" },
+  { id: "haiku", name: "Fast", version: "slot" },
 ]
 
 export type CodexThinkingLevel = "low" | "medium" | "high" | "xhigh"
+
+export const ENABLE_CODEX_PROVIDER = false
 
 export const CODEX_MODELS = [
   {
