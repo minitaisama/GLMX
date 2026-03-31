@@ -8,16 +8,16 @@ interface OnboardingProps {
 }
 
 const MODEL_MAPPINGS = [
-  { role: "default", model: "glm-4-plus" },
-  { role: "weakModel", model: "glm-4-flash" },
-  { role: "editorModel", model: "glm-4-long" },
+  { role: "opusModel", model: "glm-5.1" },
+  { role: "sonnetModel", model: "glm-5-turbo" },
+  { role: "haikuModel", model: "glm-4.5-air" },
 ]
 
 export function Onboarding({ onConnect }: OnboardingProps) {
   const [apiKey, setApiKey] = useState("")
   const [showKey, setShowKey] = useState(false)
   const [showAdvanced, setShowAdvanced] = useState(false)
-  const [baseUrl, setBaseUrl] = useState("https://open.bigmodel.cn/api/paas/v4")
+  const [baseUrl, setBaseUrl] = useState("https://api.z.ai/api/anthropic")
   const [isLoading, setIsLoading] = useState(false)
 
   const handleConnect = async () => {

@@ -13,30 +13,29 @@ interface ModelMapping {
 
 const DEFAULT_MAPPINGS: ModelMapping[] = [
   {
-    role: "default",
-    label: "Default model",
+    role: "opusModel",
+    label: "Opus model",
+    description: "Used for complex reasoning and heavy tasks.",
+    model: "glm-5.1",
+  },
+  {
+    role: "sonnetModel",
+    label: "Sonnet model",
     description: "Used for general tasks and conversation.",
-    model: "glm-4-plus",
+    model: "glm-5-turbo",
   },
   {
-    role: "weakModel",
-    label: "Weak model",
+    role: "haikuModel",
+    label: "Haiku model",
     description: "Used for lightweight operations and quick completions.",
-    model: "glm-4-flash",
-  },
-  {
-    role: "editorModel",
-    label: "Editor model",
-    description: "Handles large-file editing and diffs.",
-    model: "glm-4-long",
+    model: "glm-4.5-air",
   },
 ]
 
 const AVAILABLE_MODELS = [
-  "glm-4-plus",
-  "glm-4-long",
-  "glm-4-flash",
-  "glm-4-flashx",
+  "glm-5.1",
+  "glm-5-turbo",
+  "glm-4.5-air",
   "codegeex-4",
   "glm-4v-plus",
 ]
@@ -58,7 +57,7 @@ export function Settings({ onBack }: SettingsProps) {
   const [activeTab, setActiveTab] = useState<SettingsTab>("zai")
   const [apiKey, setApiKey] = useState("sk-••••••••••••••••••••••••••••••••")
   const [showKey, setShowKey] = useState(false)
-  const [baseUrl, setBaseUrl] = useState("https://open.bigmodel.cn/api/paas/v4")
+  const [baseUrl, setBaseUrl] = useState("https://api.z.ai/api/anthropic")
   const [mappings, setMappings] = useState<ModelMapping[]>(DEFAULT_MAPPINGS)
   const [saved, setSaved] = useState(false)
 
@@ -202,7 +201,7 @@ function ZAIConfig({
       </SettingsSection>
 
       <SettingsSection title="Endpoint">
-        <SettingsField label="Base URL" description="Override the default ZAI API endpoint. Leave blank to use the default.">
+        <SettingsField label="Base URL" description="ZAI Anthropic-compatible API endpoint. Defaults: https://api.z.ai/api/anthropic">
           <input
             type="text"
             value={baseUrl}
@@ -259,8 +258,8 @@ function ModelMappingConfig({
 
       <div className="bg-muted border border-border rounded-lg p-4">
         <p className="text-xs text-muted-foreground leading-relaxed">
-          <span className="text-foreground font-medium">Tip:</span> Use GLM-4-Flash for the weak model to reduce latency on
-          routine tasks, and GLM-4-Plus for the default model when accuracy matters most.
+          <span className="text-foreground font-medium">Tip:</span> Use GLM-4.5-Air for the haiku model to reduce latency on
+          routine tasks, and GLM-5.1 for the opus model when accuracy matters most.
         </p>
       </div>
     </div>
