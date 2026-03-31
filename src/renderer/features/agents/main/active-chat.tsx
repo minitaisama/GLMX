@@ -1661,6 +1661,7 @@ const DiffStateProvider = memo(function DiffStateProvider({
 
 interface DiffSidebarRendererProps {
   worktreePath: string | null
+  isWorktreeRegistered?: boolean
   chatId: string
   sandboxId: string | null
   repository: { owner: string; name: string } | null
@@ -1708,6 +1709,7 @@ interface DiffSidebarRendererProps {
 
 const DiffSidebarRenderer = memo(function DiffSidebarRenderer({
   worktreePath,
+  isWorktreeRegistered,
   chatId,
   sandboxId,
   repository,
@@ -1754,6 +1756,11 @@ const DiffSidebarRenderer = memo(function DiffSidebarRenderer({
 }: DiffSidebarRendererProps) {
   // Get callbacks and state from context
   const { handleCloseDiff, viewedCount, handleViewedCountChange } = useDiffState()
+  const hasValidLocalWorkspace = !!worktreePath && isWorktreeRegistered !== false
+  const agentProducedFiles = useMemo(
+    () => Array.from(new Set(subChatsWithFiles.flatMap((subChat) => subChat.filePaths))).slice(0, 12),
+    [subChatsWithFiles],
+  )
 
   const handleReviewWithAI = useCallback(() => {
     if (diffDisplayMode !== "side-peek") {
@@ -1782,7 +1789,7 @@ const DiffSidebarRenderer = memo(function DiffSidebarRenderer({
       className="flex flex-col h-full min-w-0 overflow-hidden"
     >
       {/* Unified Header - branch selector, fetch, review, PR actions, close */}
-      {worktreePath ? (
+      {hasValidLocalWorkspace ? (
         <DiffSidebarHeader
           worktreePath={worktreePath}
           currentBranch={branchData?.current ?? ""}
@@ -1820,7 +1827,7 @@ const DiffSidebarRenderer = memo(function DiffSidebarRenderer({
           displayMode={diffDisplayMode}
           onDisplayModeChange={setDiffDisplayMode}
         />
-      ) : sandboxId ? (
+      ) : sandboxId || !hasValidLocalWorkspace ? (
         <div className="flex items-center h-10 px-2 border-b border-border/50 bg-background flex-shrink-0">
           <Button
             variant="ghost"
@@ -1835,28 +1842,55 @@ const DiffSidebarRenderer = memo(function DiffSidebarRenderer({
       ) : null}
 
       {/* Content: file list + diff view - vertical when narrow */}
-      <DiffSidebarContent
-        worktreePath={worktreePath}
-        chatId={chatId}
-        sandboxId={sandboxId}
-        repository={repository}
-        diffStats={diffStats}
-        setDiffStats={setDiffStats}
-        diffContent={diffContent}
-        parsedFileDiffs={parsedFileDiffs}
-        prefetchedFileContents={prefetchedFileContents}
-        setDiffCollapseState={setDiffCollapseState}
-        diffViewRef={diffViewRef}
-        agentChat={agentChat}
-        sidebarWidth={effectiveWidth}
-        onCommitWithAI={handleCommitToPr}
-        isCommittingWithAI={isCommittingToPr}
-        diffMode={diffMode}
-        setDiffMode={setDiffMode}
-        onCreatePr={handleCreatePrDirect}
-        onDiscardSuccess={onDiscardSuccess}
-        subChats={subChatsWithFiles}
-      />
+      {hasValidLocalWorkspace ? (
+        <DiffSidebarContent
+          worktreePath={worktreePath}
+          chatId={chatId}
+          sandboxId={sandboxId}
+          repository={repository}
+          diffStats={diffStats}
+          setDiffStats={setDiffStats}
+          diffContent={diffContent}
+          parsedFileDiffs={parsedFileDiffs}
+          prefetchedFileContents={prefetchedFileContents}
+          setDiffCollapseState={setDiffCollapseState}
+          diffViewRef={diffViewRef}
+          agentChat={agentChat}
+          sidebarWidth={effectiveWidth}
+          onCommitWithAI={handleCommitToPr}
+          isCommittingWithAI={isCommittingToPr}
+          diffMode={diffMode}
+          setDiffMode={setDiffMode}
+          onCreatePr={handleCreatePrDirect}
+          onDiscardSuccess={onDiscardSuccess}
+          subChats={subChatsWithFiles}
+        />
+      ) : (
+        <div className="flex-1 flex items-center justify-center p-6">
+          <div className="w-full max-w-lg rounded-xl border border-border/60 bg-card/70 p-5 text-left">
+            <p className="text-sm font-medium text-foreground">
+              This chat is not attached to a local git workspace
+            </p>
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              Review only works from a tracked local repository. If the agent edited a zip or another external folder, import or unzip it into this repo first, then reopen Review.
+            </p>
+            {agentProducedFiles.length > 0 && (
+              <div className="mt-4 rounded-lg border border-border/60 bg-background/80 p-3">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Agent-produced file list
+                </p>
+                <ul className="mt-2 space-y-1 text-sm text-foreground">
+                  {agentProducedFiles.map((filePath) => (
+                    <li key={filePath} className="truncate font-mono text-xs">
+                      {filePath}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 
@@ -6099,6 +6133,15 @@ export function ChatView({
       return
     }
 
+    if (!worktreePath || isWorktreeRegistered === false) {
+      toast.error("This chat is not attached to a local git workspace", {
+        position: "top-center",
+        description:
+          "Review uses git changes from a tracked local repo. If the agent worked in a zip or external folder, import or unzip it into this repo first.",
+      })
+      return
+    }
+
     setIsReviewing(true)
     try {
       // Get PR context from backend
@@ -6126,7 +6169,7 @@ export function ChatView({
     } finally {
       setIsReviewing(false)
     }
-  }, [chatId, activeSubChatId, setPendingReviewMessage, setFilteredSubChatId])
+  }, [chatId, worktreePath, isWorktreeRegistered, activeSubChatId, setPendingReviewMessage, setFilteredSubChatId])
 
   // Handle Fix Conflicts - sends a message to Claude to sync with main and fix merge conflicts
   const setPendingConflictResolutionMessage = useSetAtom(pendingConflictResolutionMessageAtom)
@@ -6148,6 +6191,11 @@ Make sure to preserve all functionality from both branches when resolving confli
 
   // Fetch branch data for diff sidebar header
   const { data: branchData } = trpc.changes.getBranches.useQuery(
+    { worktreePath: worktreePath || "" },
+    { enabled: !!worktreePath }
+  )
+
+  const { data: isWorktreeRegistered } = trpc.changes.isWorktreeRegistered.useQuery(
     { worktreePath: worktreePath || "" },
     { enabled: !!worktreePath }
   )
@@ -7946,6 +7994,7 @@ Make sure to preserve all functionality from both branches when resolving confli
           >
             <DiffSidebarRenderer
               worktreePath={worktreePath}
+              isWorktreeRegistered={isWorktreeRegistered}
               chatId={chatId}
               sandboxId={sandboxId}
               repository={repository}

@@ -4,7 +4,7 @@ import type { SubChatFilterItem } from "./components/changes-file-filter";
 import type { CommitInfo } from "./components/history-view";
 
 interface ChangesPanelProps {
-	worktreePath: string;
+	worktreePath: string | null;
 	/** Controlled active tab for ChangesView */
 	activeTab?: "changes" | "history";
 	/** Currently selected file path for highlighting */
@@ -61,14 +61,6 @@ export function ChangesPanel({
 	onActiveTabChange,
 	pushCount,
 }: ChangesPanelProps) {
-	if (!worktreePath) {
-		return (
-			<div className="flex-1 flex items-center justify-center text-muted-foreground text-sm p-4">
-				No worktree path available
-			</div>
-		);
-	}
-
 	return (
 		<div className="flex flex-col h-full overflow-hidden">
 			<ChangesView
