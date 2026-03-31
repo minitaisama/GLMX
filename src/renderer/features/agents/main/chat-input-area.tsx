@@ -78,6 +78,7 @@ import {
 import {
   CLAUDE_MODELS,
   CODEX_MODELS,
+  ENABLE_CODEX_PROVIDER,
   type CodexThinkingLevel,
 } from "../lib/models"
 import type { DiffTextContext, SelectedTextContext } from "../lib/queue-utils"
@@ -1583,6 +1584,7 @@ export const ChatInputArea = memo(function ChatInputArea({
                         onThinkingChange: setThinkingEnabled,
                       }}
                       codex={{
+                        isEnabled: ENABLE_CODEX_PROVIDER,
                         models: codexUiModels,
                         selectedModelId: selectedCodexModel.id,
                         onSelectModel: (modelId) => {

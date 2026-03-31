@@ -12,6 +12,11 @@ interface AgentsRenameSubChatDialogProps {
   onSave: (name: string) => Promise<void>
   currentName: string
   isLoading?: boolean
+  title?: string
+  description?: string
+  placeholder?: string
+  contextPreview?: string | null
+  suggestedName?: string | null
 }
 
 const EASING_CURVE = [0.55, 0.055, 0.675, 0.19] as const
@@ -23,6 +28,11 @@ export function AgentsRenameSubChatDialog({
   onSave,
   currentName,
   isLoading = false,
+  title = "Rename thread",
+  description = "Keep it short and recognizable.",
+  placeholder = "Chat name",
+  contextPreview = null,
+  suggestedName = null,
 }: AgentsRenameSubChatDialogProps) {
   const [mounted, setMounted] = useState(false)
   const [name, setName] = useState(currentName)
@@ -132,18 +142,55 @@ export function AgentsRenameSubChatDialog({
               <div className="bg-background rounded-2xl border shadow-2xl overflow-hidden" data-canvas-dialog>
                 <div className="p-6">
                   <h2 className="text-xl font-semibold mb-4">
-                    Rename agent
+                    {title}
                   </h2>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    {description}
+                  </p>
+
+                  {contextPreview ? (
+                    <div className="mb-4 rounded-xl border border-border bg-muted/40 px-3 py-2">
+                      <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                        Context
+                      </div>
+                      <div className="text-sm text-foreground/85">
+                        {contextPreview}
+                      </div>
+                    </div>
+                  ) : null}
 
                   {/* Input */}
                   <Input
                     ref={inputRef}
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    placeholder="Chat name"
+                    placeholder={placeholder}
                     className="w-full h-11 text-sm"
                     disabled={isSaving || isLoading}
                   />
+
+                  {suggestedName ? (
+                    <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-border bg-muted/30 px-3 py-2">
+                      <div className="min-w-0">
+                        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                          Suggested
+                        </div>
+                        <div className="truncate text-sm text-foreground">
+                          {suggestedName}
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="shrink-0"
+                        onClick={() => setName(suggestedName)}
+                        disabled={isSaving || isLoading || name.trim() === suggestedName}
+                      >
+                        Use
+                      </Button>
+                    </div>
+                  ) : null}
                 </div>
 
                 {/* Footer with buttons */}
@@ -174,4 +221,3 @@ export function AgentsRenameSubChatDialog({
     portalTarget,
   )
 }
-

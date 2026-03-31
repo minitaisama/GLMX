@@ -369,9 +369,9 @@ const CodexIcon = (props: React.SVGProps<SVGSVGElement>) => (
 
 // Model options for Claude Code
 const claudeModels = [
-  { id: "opus", name: "Opus 4.6" },
-  { id: "sonnet", name: "Sonnet 4.6" },
-  { id: "haiku", name: "Haiku 4.5" },
+  { id: "opus", name: "Heavy slot" },
+  { id: "sonnet", name: "Standard slot" },
+  { id: "haiku", name: "Fast slot" },
 ]
 
 // Agent providers
