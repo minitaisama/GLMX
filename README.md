@@ -1,178 +1,111 @@
-# 1Code
+# GLMX
 
-[1Code.dev](https://1code.dev)
+`GLMX` is a `ZAI Agent` desktop fork focused on running the local coding agent workflow with ZAI-backed GLM models.
 
-Open-source coding agent client. Run Claude Code, Codex, and more - locally or in the cloud.
+This fork keeps the core desktop experience from the upstream app:
 
-By [21st.dev](https://21st.dev) team
+- multi-pane coding agent UI
+- local project selection
+- diff preview and approval
+- terminal output
+- git panel and commit flow
+- Claude/Codex runtime integration
 
-## Highlights
+The main change is the onboarding and configuration flow:
 
-- **Multi-Agent Support** - Claude Code and Codex in one app, switch instantly
-- **Visual UI** - Cursor-like desktop app with diff previews and real-time tool execution
-- **Custom Models & Providers (BYOK)** - Bring your own API keys
-- **Git Worktree Isolation** - Each chat runs in its own isolated worktree
-- **Background Agents** - Cloud sandboxes that run when your laptop sleeps
-- **Live Browser Previews** - Preview dev branches in a real browser
-- **Kanban Board** - Visualize agent sessions
-- **Built-in Git Client** - Visual staging, diffs, PR creation, push to GitHub
-- **File Viewer** - File preview with Cmd+P search and image viewer
-- **Integrated Terminal** - Sidebar or bottom panel with Cmd+J toggle
-- **Model Selector** - Switch between models and providers
-- **MCP & Plugins** - Server management, plugin marketplace, rich tool display
-- **Automations** - Trigger agents from GitHub, Linear, Slack, or manually from git events
-- **Chat Forking** - Fork a sub-chat from any assistant message
-- **Message Queue** - Queue prompts while an agent is working
-- **API** - Run agents programmatically with a single API call
-- **Voice Input** - Hold-to-talk dictation
-- **Plan Mode** - Structured plans with markdown preview
-- **Extended Thinking** - Enabled by default with visual UX
-- **Skills & Slash Commands** - Custom skills and slash commands
-- **Custom Sub-agents** - Visual task display in sidebar
-- **Memory** - CLAUDE.md and AGENTS.md support
-- **PWA** - Start and monitor background agents from your phone
-- **Cross Platform** - macOS desktop, web app, Windows and Linux
+- no hosted account onboarding is required to open the app
+- the app asks for a ZAI API key on first launch
+- ZAI settings are persisted locally
+- model routing is written into `~/.claude/settings.json`
 
-## Features
+## What This Fork Does
 
-### Run coding agents the right way
+- replaces hosted onboarding with local ZAI onboarding
+- stores ZAI config in app user data
+- syncs ZAI environment values into `~/.claude/settings.json`
+- adds a settings section for updating the key and GLM model mapping
+- strips hosted branding, analytics, and update checks from the desktop flow
 
-Run agents locally, in worktrees, in background - without touching main branch.
+## Default ZAI Mapping
 
-![Worktree Demo](assets/worktree.gif)
+The app writes these defaults unless you change them in Settings:
 
-- **Git Worktree Isolation** - Each chat session runs in its own isolated worktree
-- **Background Execution** - Run agents in background while you continue working
-- **Local-first** - All code stays on your machine, no cloud sync required
-- **Branch Safety** - Never accidentally commit to main branch
-- **Shared Terminals** - Share terminal sessions across local-mode workspaces
+- Base URL: `https://api.z.ai/api/anthropic`
+- Heavy model: `glm-4.7`
+- Standard model: `glm-4.7`
+- Fast model: `glm-4.5-air`
 
----
+## First Launch Flow
 
-### UI that finally respects your code
+1. Open the app
+2. Paste your ZAI API key
+3. Click `Start`
+4. Pick a local project folder
+5. Start using the agent
 
-Cursor-like UI with diff previews, built-in git client, and the ability to see changes before they land.
-
-![Cursor UI Demo](assets/cursor-ui.gif)
-
-- **Diff Previews** - See exactly what changes the agent is making in real-time
-- **Built-in Git Client** - Stage, commit, push to GitHub, and manage branches without leaving the app
-- **Git Activity Badges** - See git operations directly on agent messages
-- **Rollback** - Roll back changes from any user message bubble
-- **Real-time Tool Execution** - See bash commands, file edits, and web searches as they happen
-- **File Viewer** - File preview with Cmd+P search, syntax highlighting, and image viewer
-- **Chat Forking** - Fork a sub-chat from any assistant message to explore alternatives
-- **Chat Export** - Export conversations for sharing or archival
-- **File Mentions** - Reference files directly in chat with @ mentions
-- **Message Queue** - Queue up prompts while an agent is working
-
----
-
-### Plan mode that actually helps you think
-
-The agent asks clarifying questions, builds structured plans, and shows clean markdown preview - all before execution.
-
-![Plan Mode Demo](assets/plan-mode.gif)
-
-- **Clarifying Questions** - The agent asks what it needs to know before starting
-- **Structured Plans** - See step-by-step breakdown of what will happen
-- **Clean Markdown Preview** - Review plans in readable format
-- **Review Before Execution** - Approve or modify the plan before the agent acts
-- **Extended Thinking** - Enabled by default with visual thinking gradient
-- **Sub-agents** - Visual task list for sub-agents in the details sidebar
-
----
-
-### Background agents that never sleep
-
-Close your laptop. Your agents keep running in isolated cloud sandboxes with live browser previews.
-
-- **Runs When You Sleep** - Background agents continue working even when your laptop is closed
-- **Cloud Sandboxes** - Every background session runs in an isolated cloud environment
-- **Live Browser Previews** - See your dev branch running in a real browser
-
----
-
-### Connect anything with MCP
-
-Full MCP server lifecycle management with a built-in plugin marketplace. No config files needed.
-
-- **MCP Server Management** - Toggle, configure, and delete MCP servers from the UI
-- **Plugin Marketplace** - Browse and install plugins with one click
-- **Rich Tool Display** - See MCP tool calls with formatted inputs and outputs
-- **@ Mentions** - Reference MCP servers directly in chat input
-
----
-
-### Automations that work while you sleep
-
-Trigger agents from GitHub, Linear, Slack, or manually from git events. Auto-review PRs, fix CI failures, and complete tasks - all configurable.
-
-- **@1code Triggers** - Tag @1code in GitHub, Linear, or Slack to start agents
-- **Git Event Triggers** - Run automations on push, PR, or any git event
-- **Conditions & Filters** - Control when automations fire
-- **Execution Timeline** - Visual history of past runs
-- **Silent Mode** - Toggle respond-to-trigger for background automations
-
-Automations require a [Pro or Max subscription](https://1code.dev/pro). Learn more at [1code.dev/agents/async](https://1code.dev/agents/async).
-
-
-## API
-
-Run coding agents programmatically. Point at a repo, give it a task - the agent runs in a sandbox and delivers a PR.
-
-```bash
-curl -X POST https://1code.dev/api/v1/tasks \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -d '{
-    "repository": "https://github.com/your-org/your-repo",
-    "prompt": "Fix the failing CI tests"
-  }'
-```
-
-- **Remote Sandboxes** - Isolated cloud environment, repo cloned, dependencies installed
-- **Git & PR Integration** - Agent commits, pushes branches, opens PRs automatically
-- **Async Execution** - Fire and forget, poll for status or get notified
-- **Follow-up Messages** - Send additional instructions to a running task
-
-Learn more at [1code.dev/agents/api](https://1code.dev/agents/api)
-
-## Installation
-
-### Option 1: Build from source (free)
-
-```bash
-# Prerequisites: Bun, Python 3.11, setuptools, Xcode Command Line Tools (macOS)
-bun install
-bun run claude:download  # Download Claude binary (required!)
-bun run codex:download   # Download Codex binary (required!)
-bun run build
-bun run package:mac  # or package:win, package:linux
-```
-
-> **Important:** The `claude:download` and `codex:download` steps download required agent binaries. If you skip them, the app may build but agent functionality will not work correctly.
->
-> **Python note:** Python 3.11 is recommended for native module rebuilds. On Python 3.12+, make sure `setuptools` is installed (`pip install setuptools`).
-
-### Option 2: Subscribe to 1code.dev (recommended)
-
-Get pre-built releases + background agents support by subscribing at [1code.dev](https://1code.dev).
-
-Your subscription helps us maintain and improve 1Code.
+The app remembers your config between launches.
 
 ## Development
 
+### Prerequisites
+
+- Bun
+- Node.js
+- macOS, Linux, or Windows build tooling required by Electron native modules
+
+### Install
+
 ```bash
 bun install
-bun run claude:download  # First time only
-bun run codex:download   # First time only
+bun run claude:download
+bun run codex:download
+```
+
+### Run in Dev
+
+```bash
 bun run dev
 ```
 
-## Feedback & Community
+### Production Build
 
-Join our [Discord](https://discord.gg/8ektTZGnj4) for support and discussions.
+```bash
+bun run build
+```
+
+Optionally package the desktop app:
+
+```bash
+bun run package:mac
+# or
+bun run package:win
+# or
+bun run package:linux
+```
+
+## Key Files
+
+- `src/main/lib/zai-config.ts`
+  local ZAI config persistence and sync into Claude settings
+
+- `src/main/lib/trpc/routers/zai.ts`
+  tRPC procedures for reading and saving ZAI config
+
+- `src/renderer/features/onboarding/zai-onboarding-page.tsx`
+  first-run onboarding screen for entering the ZAI key
+
+- `src/renderer/components/dialogs/settings-tabs/agents-models-tab.tsx`
+  settings UI for editing the saved key and model mapping
+
+- `src/renderer/App.tsx`
+  root renderer gate that decides whether to show onboarding or the workspace
+
+## Notes
+
+- This repo is intended for local desktop usage.
+- Some upstream web/cloud features are intentionally disabled or no-op in this fork.
+- The runtime still relies on the bundled agent binaries downloaded by the setup scripts.
 
 ## License
 
-Apache License 2.0 - see [LICENSE](LICENSE) for details.
+Apache License 2.0. See [LICENSE](LICENSE).
