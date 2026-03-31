@@ -15,6 +15,14 @@ import { getLaunchDirectory } from "../../cli"
 
 const execAsync = promisify(exec)
 
+function withPathStatus<T extends { path: string }>(project: T | null | undefined) {
+  if (!project) return project
+  return {
+    ...project,
+    pathExists: existsSync(project.path),
+  }
+}
+
 export const projectsRouter = router({
   /**
    * Get launch directory from CLI args (consumed once)
@@ -29,7 +37,7 @@ export const projectsRouter = router({
    */
   list: publicProcedure.query(() => {
     const db = getDatabase()
-    return db.select().from(projects).orderBy(desc(projects.updatedAt)).all()
+    return db.select().from(projects).orderBy(desc(projects.updatedAt)).all().map((project) => withPathStatus(project))
   }),
 
   /**
@@ -39,7 +47,7 @@ export const projectsRouter = router({
     .input(z.object({ id: z.string() }))
     .query(({ input }) => {
       const db = getDatabase()
-      return db.select().from(projects).where(eq(projects.id, input.id)).get()
+      return withPathStatus(db.select().from(projects).where(eq(projects.id, input.id)).get())
     }),
 
   /**
@@ -183,6 +191,52 @@ export const projectsRouter = router({
         .where(eq(projects.id, input.id))
         .returning()
         .get()
+    }),
+
+  relinkFolder: publicProcedure
+    .input(z.object({ id: z.string() }))
+    .mutation(async ({ input, ctx }) => {
+      const window = ctx.getWindow?.() ?? BrowserWindow.getFocusedWindow()
+
+      if (!window) {
+        throw new Error("No window available for folder dialog")
+      }
+
+      if (!window.isFocused()) {
+        window.focus()
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+
+      const result = await dialog.showOpenDialog(window, {
+        properties: ["openDirectory", "createDirectory"],
+        title: "Relink Project Folder",
+        buttonLabel: "Use Folder",
+      })
+
+      if (result.canceled || result.filePaths.length === 0) {
+        return null
+      }
+
+      const folderPath = result.filePaths[0]!
+      const gitInfo = await getGitRemoteInfo(folderPath)
+      const db = getDatabase()
+
+      return withPathStatus(
+        db
+          .update(projects)
+          .set({
+            name: basename(folderPath),
+            path: folderPath,
+            gitRemoteUrl: gitInfo.remoteUrl,
+            gitProvider: gitInfo.provider,
+            gitOwner: gitInfo.owner,
+            gitRepo: gitInfo.repo,
+            updatedAt: new Date(),
+          })
+          .where(eq(projects.id, input.id))
+          .returning()
+          .get(),
+      )
     }),
 
   /**

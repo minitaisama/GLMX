@@ -6,6 +6,7 @@ import * as os from "os"
 import path from "path"
 import { z } from "zod"
 import { setConnectionMethod } from "../../analytics"
+import { logger } from "../../logger"
 import {
   buildClaudeEnv,
   checkOfflineFallback,
@@ -835,6 +836,8 @@ export const claudeRouter = router({
         const streamStart = Date.now()
         let chunkCount = 0
         let lastChunkType = ""
+        let firstTokenLogged = false
+        let toolCalls = 0
         // Shared sessionId for cleanup to save on abort
         let currentSessionId: string | null = null
         console.log(
@@ -1493,6 +1496,17 @@ export const claudeRouter = router({
             }
 
             const resolvedModel = finalCustomConfig?.model || input.model
+            logger.agent.info("Agent session starting", {
+              chatId: input.chatId,
+              subChatId: input.subChatId,
+              projectPath: input.projectPath || input.cwd,
+              model: resolvedModel || finalEnv.ANTHROPIC_DEFAULT_SONNET_MODEL,
+              worktree: Boolean(input.projectPath && input.projectPath !== input.cwd),
+            })
+            logger.perf.info("Claude binary spawning", {
+              executablePath: claudeBinaryPath,
+              chatId: input.chatId,
+            })
 
             // DEBUG: If using Ollama, test if it's actually responding
             if (isUsingOllama && finalCustomConfig) {
@@ -2018,6 +2032,11 @@ ${prompt}
               try {
                 stream = claudeQuery(queryOptions)
               } catch (queryError) {
+                logger.agent.error("Agent spawn failed", {
+                  error: queryError instanceof Error ? queryError.message : String(queryError),
+                  executablePath: claudeBinaryPath,
+                  chatId: input.chatId,
+                })
                 console.error(
                   "[CLAUDE] ✗ Failed to create SDK query:",
                   queryError,
@@ -2348,6 +2367,20 @@ ${prompt}
                     }
 
                     // Accumulate based on chunk type
+                    if (
+                      !firstTokenLogged &&
+                      (chunk.type === "text-delta" ||
+                        chunk.type === "reasoning-delta" ||
+                        chunk.type === "tool-input-delta")
+                    ) {
+                      firstTokenLogged = true
+                      logger.perf.info("First token received", {
+                        latencyMs: Date.now() - streamStart,
+                        chatId: input.chatId,
+                        subChatId: input.subChatId,
+                      })
+                    }
+
                     switch (chunk.type) {
                       case "text-delta":
                         currentText += chunk.delta
@@ -2359,6 +2392,12 @@ ${prompt}
                         }
                         break
                       case "tool-input-available":
+                        toolCalls++
+                        logger.agent.debug("Tool call", {
+                          tool: chunk.toolName,
+                          input: JSON.stringify(chunk.input).slice(0, 200),
+                          chatId: input.chatId,
+                        })
                         // DEBUG: Log tool calls
                         console.log(
                           `[SD] M:TOOL_CALL sub=${subId} toolName="${chunk.toolName}" mode=${input.mode} callId=${chunk.toolCallId}`,
@@ -2385,6 +2424,12 @@ ${prompt}
                         })
                         break
                       case "tool-output-available":
+                        logger.agent.debug("Tool result", {
+                          toolCallId: chunk.toolCallId,
+                          durationMs: 0,
+                          success: true,
+                          chatId: input.chatId,
+                        })
                         const toolPart = parts.find(
                           (p) =>
                             p.type?.startsWith("tool-") &&
@@ -2474,6 +2519,12 @@ ${prompt}
                 // This catches errors during streaming (like process exit)
                 const err = streamError as Error
                 const stderrOutput = stderrLines.join("\n")
+                logger.agent.error("Agent crashed", {
+                  error: err.message,
+                  signal: abortController.signal.aborted ? "aborted" : null,
+                  chatId: input.chatId,
+                  stderr: stderrOutput.slice(0, 500),
+                })
 
                 if (isUsingOllama) {
                   console.error(`[Ollama] ===== STREAM ERROR =====`)
@@ -2713,6 +2764,14 @@ ${prompt}
             }
 
             const duration = ((Date.now() - streamStart) / 1000).toFixed(1)
+            logger.agent.info("Agent session ended", {
+              chatId: input.chatId,
+              subChatId: input.subChatId,
+              durationMs: Date.now() - streamStart,
+              totalTokens: metadata?.totalTokens ?? null,
+              exitCode: 0,
+              toolCalls,
+            })
             console.log(
               `[SD] M:END sub=${subId} reason=ok n=${chunkCount} last=${lastChunkType} t=${duration}s`,
             )
@@ -2725,6 +2784,12 @@ ${prompt}
             safeComplete()
           } catch (error) {
             const duration = ((Date.now() - streamStart) / 1000).toFixed(1)
+            logger.agent.error("Agent session ended with unexpected error", {
+              chatId: input.chatId,
+              subChatId: input.subChatId,
+              durationMs: Date.now() - streamStart,
+              error: error instanceof Error ? error.message : String(error),
+            })
             console.log(
               `[SD] M:END sub=${subId} reason=unexpected_error n=${chunkCount} t=${duration}s`,
             )

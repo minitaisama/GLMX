@@ -13,6 +13,7 @@ import {
 import { join } from "path"
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "fs"
 import { createIPCHandler } from "trpc-electron/main"
+import { logger } from "../lib/logger"
 import { createAppRouter } from "../lib/trpc/routers"
 import { getAuthManager, handleAuthCode, getBaseUrl } from "../index"
 import { registerGitWatcherIPC } from "../lib/git/watcher"
@@ -287,6 +288,9 @@ function registerIpcHandlers(): void {
   // Shell
   ipcMain.handle("shell:open-external", (_event, url: string) =>
     shell.openExternal(url),
+  )
+  ipcMain.handle("shell:open-path", (_event, filePath: string) =>
+    shell.openPath(filePath),
   )
 
   // Clipboard
@@ -651,6 +655,12 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
   console.log(
     `[Main] Created window ${window.id} with stable ID "${stableWindowId}" (total: ${windowManager.count()})`,
   )
+  logger.main.info("Main window created", {
+    id: window.id,
+    stableWindowId,
+    bounds: window.getBounds(),
+    options,
+  })
 
   // Setup tRPC IPC handler (singleton pattern)
   if (ipcHandler) {
@@ -670,6 +680,7 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
   // Show window when ready
   window.on("ready-to-show", () => {
     console.log("[Main] Window", window.id, "ready to show")
+    logger.main.info("Window ready to show", { id: window.id })
     // Start with traffic lights hidden - the renderer will show them
     // after hydration based on the persisted sidebar state
     if (process.platform === "darwin") {
@@ -743,6 +754,11 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
 
   // Prevent window close if there are active streaming sessions
   window.on("close", (event) => {
+    logger.main.warn("Window close requested", {
+      id: window.id,
+      hasActiveClaudeSessions: hasActiveClaudeSessions(),
+      hasActiveCodexStreams: hasActiveCodexStreams(),
+    })
     // Skip confirmation if app quit was already confirmed by the user
     if (isQuitting) {
       // Still abort sessions gracefully so partial state is saved
@@ -777,6 +793,7 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
   // Handle window close
   window.on("closed", () => {
     console.log(`[Main] Window ${window.id} closed`)
+    logger.main.info("Window closed", { id: window.id })
     // windowManager handles cleanup via 'closed' event listener
   })
 
@@ -836,6 +853,7 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
   // Log page load - traffic light visibility is managed by the renderer
   window.webContents.on("did-finish-load", () => {
     console.log("[Main] Page finished loading in window", window.id)
+    logger.main.info("Page finished loading", { id: window.id })
   })
   window.webContents.on(
     "did-fail-load",
@@ -847,8 +865,23 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
         errorCode,
         errorDescription,
       )
+      logger.main.error("Page failed to load", {
+        id: window.id,
+        errorCode,
+        errorDescription,
+      })
     },
   )
+  window.webContents.on("render-process-gone", (_event, details) => {
+    logger.main.error("Window crashed", {
+      id: window.id,
+      reason: details.reason,
+      exitCode: details.exitCode,
+    })
+  })
+  window.webContents.on("unresponsive", () => {
+    logger.main.warn("Window became unresponsive", { id: window.id })
+  })
 
   return window
 }

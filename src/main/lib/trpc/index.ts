@@ -1,6 +1,7 @@
 import { initTRPC } from "@trpc/server"
 import { BrowserWindow } from "electron"
 import superjson from "superjson"
+import { logger } from "../logger"
 
 /**
  * Context passed to all tRPC procedures
@@ -25,25 +26,29 @@ const t = initTRPC.context<Context>().create({
   },
 })
 
-/**
- * Export reusable router and procedure helpers
- */
-export const router = t.router
-export const publicProcedure = t.procedure
-export const middleware = t.middleware
-
-/**
- * Middleware to log procedure calls
- */
-export const loggerMiddleware = middleware(async ({ path, type, next }) => {
+const loggerMiddleware = t.middleware(async ({ path, type, next }) => {
   const start = Date.now()
+  logger.trpc.debug(`→ ${type} ${path}`)
+
   const result = await next()
-  const duration = Date.now() - start
-  console.log(`[tRPC] ${type} ${path} - ${duration}ms`)
+  const durationMs = Date.now() - start
+
+  if (result.ok) {
+    logger.trpc.debug(`← ${path} OK (${durationMs}ms)`)
+  } else {
+    logger.trpc.error(`← ${path} ERROR (${durationMs}ms)`, {
+      error: result.error.message,
+      code: result.error.code,
+    })
+  }
+
   return result
 })
 
 /**
- * Procedure with logging
+ * Export reusable router and procedure helpers
  */
-export const loggedProcedure = publicProcedure.use(loggerMiddleware)
+export const router = t.router
+export const publicProcedure = t.procedure.use(loggerMiddleware)
+export const middleware = t.middleware
+export { loggerMiddleware }

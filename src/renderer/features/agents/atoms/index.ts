@@ -191,6 +191,7 @@ export type SelectedProject = {
   id: string
   name: string
   path: string
+  pathExists?: boolean
   gitRemoteUrl?: string | null
   gitProvider?: "github" | "gitlab" | "bitbucket" | null
   gitOwner?: string | null

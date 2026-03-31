@@ -71,6 +71,7 @@ export function ProjectSelector() {
           id: project.id,
           name: project.name,
           path: project.path,
+          pathExists: project.pathExists,
           gitRemoteUrl: project.gitRemoteUrl,
           gitProvider: project.gitProvider as
             | "github"
@@ -103,6 +104,7 @@ export function ProjectSelector() {
           id: project.id,
           name: project.name,
           path: project.path,
+          pathExists: project.pathExists,
           gitRemoteUrl: project.gitRemoteUrl,
           gitProvider: project.gitProvider as
             | "github"
@@ -115,6 +117,33 @@ export function ProjectSelector() {
         setGithubDialogOpen(false)
         setGithubUrl("")
       }
+    },
+  })
+
+  const relinkFolder = trpc.projects.relinkFolder.useMutation({
+    onSuccess: (project) => {
+      if (!project) return
+
+      utils.projects.list.setData(undefined, (oldData) => {
+        if (!oldData) return [project]
+        return oldData.map((p) => (p.id === project.id ? project : p))
+      })
+
+      setSelectedProject({
+        id: project.id,
+        name: project.name,
+        path: project.path,
+        pathExists: project.pathExists,
+        gitRemoteUrl: project.gitRemoteUrl,
+        gitProvider: project.gitProvider as
+          | "github"
+          | "gitlab"
+          | "bitbucket"
+          | null,
+        gitOwner: project.gitOwner,
+        gitRepo: project.gitRepo,
+      })
+      setOpen(false)
     },
   })
 
@@ -135,6 +164,7 @@ export function ProjectSelector() {
         id: project.id,
         name: project.name,
         path: project.path,
+        pathExists: project.pathExists,
         gitRemoteUrl: project.gitRemoteUrl,
         gitProvider: project.gitProvider as
           | "github"
@@ -160,9 +190,15 @@ export function ProjectSelector() {
     if (!dbProject) return null
     return {
       ...selectedProject,
-      name: dbProject.name,
+      ...dbProject,
     }
   }, [selectedProject, projects, isLoadingProjects])
+
+  const handleRelinkFolder = async () => {
+    if (!validSelection?.id) return
+    setOpen(false)
+    await relinkFolder.mutateAsync({ id: validSelection.id })
+  }
 
   // If no projects exist and none selected - show direct "Add repository" button
   if (!validSelection && (!projects || projects.length === 0) && !isLoadingProjects) {
@@ -197,7 +233,9 @@ export function ProjectSelector() {
             className="h-4 w-4"
           />
           <span className="truncate max-w-[120px]">
-            {validSelection?.name || "Select repo"}
+            {validSelection?.pathExists === false
+              ? `${validSelection.name} (missing)`
+              : validSelection?.name || "Select repo"}
           </span>
           <IconChevronDown className="h-3 w-3 shrink-0 opacity-50" />
         </button>
@@ -216,6 +254,16 @@ export function ProjectSelector() {
               </div>
             ) : filteredProjects.length > 0 ? (
               <CommandGroup>
+                {validSelection?.pathExists === false ? (
+                  <CommandItem
+                    value="relink-folder"
+                    onSelect={() => void handleRelinkFolder()}
+                    className="gap-2"
+                  >
+                    <FolderPlusIcon className="h-4 w-4" />
+                    <span>Relink current folder</span>
+                  </CommandItem>
+                ) : null}
                 {filteredProjects.map((project) => {
                   const isSelected = validSelection?.id === project.id
                   return (
@@ -229,7 +277,13 @@ export function ProjectSelector() {
                         project={project}
                         className="h-4 w-4"
                       />
-                      <span className="truncate flex-1">{project.name}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate">{project.name}</div>
+                        <div className="truncate text-xs text-muted-foreground">
+                          {project.path}
+                          {project.pathExists === false ? " • missing" : ""}
+                        </div>
+                      </div>
                       {isSelected && (
                         <CheckIcon className="h-4 w-4 shrink-0" />
                       )}

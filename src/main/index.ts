@@ -38,6 +38,7 @@ import {
   setIsQuitting,
 } from "./windows/main"
 import { windowManager } from "./windows/window-manager"
+import { logger } from "./lib/logger"
 
 import { IS_DEV, AUTH_SERVER_PORT } from "./constants"
 
@@ -52,6 +53,7 @@ if (IS_DEV) {
   const devUserData = join(app.getPath("userData"), "..", "ZAI Agent Dev")
   app.setPath("userData", devUserData)
   console.log("[Dev] Using separate userData path:", devUserData)
+  logger.main.info("Using separate dev userData path", { userData: devUserData })
 }
 
 // Increase V8 old-space limit for renderer/main processes to reduce OOM frequency
@@ -67,14 +69,17 @@ if (app.isPackaged && !IS_DEV) {
         dsn: sentryDsn,
       })
       console.log("[App] Sentry initialized")
+      logger.main.info("Sentry initialized")
     } catch (error) {
       console.warn("[App] Failed to initialize Sentry:", error)
     }
   } else {
     console.log("[App] Skipping Sentry initialization (no DSN configured)")
+    logger.main.info("Skipping Sentry initialization", { reason: "no_dsn" })
   }
 } else {
   console.log("[App] Skipping Sentry initialization (dev mode)")
+  logger.main.info("Skipping Sentry initialization", { reason: "dev_mode" })
 }
 
 // URL configuration (exported for use in other modules)
@@ -533,6 +538,7 @@ if (!gotTheLock) {
 if (gotTheLock) {
   // Handle second instance launch (also handles deep links on Windows/Linux)
   app.on("second-instance", (_event, commandLine) => {
+    logger.main.info("Second instance detected", { commandLine })
     // Check for deep link in command line args
     const url = commandLine.find((arg) => arg.startsWith(`${PROTOCOL}://`))
     if (url) {
@@ -553,6 +559,11 @@ if (gotTheLock) {
 
   // App ready
   app.whenReady().then(async () => {
+    logger.main.info("App starting", {
+      version: app.getVersion(),
+      platform: process.platform,
+      packaged: app.isPackaged,
+    })
     // Set dev mode app name (userData path was already set before requestSingleInstanceLock)
     // if (IS_DEV) {
     //   app.name = "ZAI Agent Dev"
@@ -561,10 +572,12 @@ if (gotTheLock) {
 
     // Register protocol handler (must be after app is ready)
     initialRegistration = registerProtocol()
+    logger.main.info("App ready")
 
     // Handle deep link on macOS (app already running)
     app.on("open-url", (event, url) => {
       console.log("[Protocol] open-url event received:", url)
+      logger.main.info("Protocol open-url received", { url })
       event.preventDefault()
       handleDeepLink(url)
     })
@@ -879,6 +892,7 @@ if (gotTheLock) {
     // Initialize auth manager (uses singleton from auth-manager module)
     authManager = initAuthManager(!!process.env.ELECTRON_RENDERER_URL)
     console.log("[App] Auth manager initialized")
+    logger.main.info("Auth manager initialized")
 
     // Initialize analytics after auth manager so we can identify user
     initAnalytics()
@@ -921,8 +935,12 @@ if (gotTheLock) {
     try {
       initDatabase()
       console.log("[App] Database initialized")
+      logger.main.info("Database initialized")
     } catch (error) {
       console.error("[App] Failed to initialize database:", error)
+      logger.main.error("Failed to initialize database", {
+        error: error instanceof Error ? error.message : String(error),
+      })
     }
 
     // Create main window
@@ -980,6 +998,7 @@ if (gotTheLock) {
 
   // Quit when all windows are closed (except on macOS)
   app.on("window-all-closed", () => {
+    logger.main.info("All windows closed", { platform: process.platform })
     if (process.platform !== "darwin") {
       app.quit()
     }
@@ -988,6 +1007,7 @@ if (gotTheLock) {
   // Cleanup before quit
   app.on("before-quit", async () => {
     console.log("[App] Shutting down...")
+    logger.main.warn("App quit requested")
     cancelAllPendingOAuth()
     await cleanupGitWatchers()
     await shutdownAnalytics()
@@ -997,9 +1017,13 @@ if (gotTheLock) {
   // Handle uncaught exceptions
   process.on("uncaughtException", (error) => {
     console.error("[App] Uncaught exception:", error)
+    logger.main.error("Uncaught exception", { error: error.message, stack: error.stack })
   })
 
   process.on("unhandledRejection", (reason, promise) => {
     console.error("[App] Unhandled rejection at:", promise, "reason:", reason)
+    logger.main.error("Unhandled rejection", {
+      reason: reason instanceof Error ? reason.message : String(reason),
+    })
   })
 }

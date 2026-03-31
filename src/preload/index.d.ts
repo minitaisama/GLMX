@@ -69,6 +69,7 @@ export interface DesktopApi {
   setBadge: (count: number | null) => Promise<void>
   showNotification: (options: { title: string; body: string }) => Promise<void>
   openExternal: (url: string) => Promise<void>
+  openPath: (filePath: string) => Promise<string>
   getApiBaseUrl: () => Promise<string>
 
   // Clipboard

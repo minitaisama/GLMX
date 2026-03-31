@@ -7,6 +7,7 @@ import {
   isZaiConfigured,
   saveZaiConfig,
 } from "../../zai-config"
+import { getMainLogPath, readMainLogTail } from "../../logger"
 
 export const zaiRouter = router({
   isConfigured: publicProcedure.query(async () => {
@@ -22,6 +23,7 @@ export const zaiRouter = router({
 
     return {
       baseUrl: config?.baseUrl || DEFAULT_ZAI_CONFIG.baseUrl,
+      customHeaders: config?.customHeaders || null,
       opusModel: config?.opusModel || DEFAULT_ZAI_CONFIG.opusModel,
       sonnetModel: config?.sonnetModel || DEFAULT_ZAI_CONFIG.sonnetModel,
       haikuModel: config?.haikuModel || DEFAULT_ZAI_CONFIG.haikuModel,
@@ -30,10 +32,18 @@ export const zaiRouter = router({
     }
   }),
 
+  getLogTail: publicProcedure.query(async () => {
+    return {
+      path: getMainLogPath(),
+      lines: await readMainLogTail(20),
+    }
+  }),
+
   saveConfig: publicProcedure
     .input(z.object({
       apiKey: z.string().min(10).optional(),
       baseUrl: z.string().default(DEFAULT_ZAI_CONFIG.baseUrl),
+      customHeaders: z.record(z.string()).optional(),
       opusModel: z.string().default(DEFAULT_ZAI_CONFIG.opusModel),
       sonnetModel: z.string().default(DEFAULT_ZAI_CONFIG.sonnetModel),
       haikuModel: z.string().default(DEFAULT_ZAI_CONFIG.haikuModel),
@@ -49,6 +59,7 @@ export const zaiRouter = router({
       await saveZaiConfig({
         apiKey,
         baseUrl: input.baseUrl,
+        customHeaders: input.customHeaders,
         opusModel: input.opusModel,
         sonnetModel: input.sonnetModel,
         haikuModel: input.haikuModel,

@@ -10,6 +10,7 @@ import { useAgentSubChatStore } from "./features/agents/stores/sub-chat-store"
 import { AgentsLayout } from "./features/layout/agents-layout"
 import { SelectRepoPage, ZaiOnboardingPage } from "./features/onboarding"
 import { appStore } from "./lib/jotai-store"
+import { rlog } from "./lib/logger"
 import { VSCodeThemeProvider } from "./lib/themes/theme-provider"
 import { trpc } from "./lib/trpc"
 
@@ -85,9 +86,24 @@ function AppContent() {
     if (isLoadingProjects) return selectedProject
     // After loading, validate against DB
     if (!projects) return null
-    const exists = projects.some((p) => p.id === selectedProject.id)
-    return exists ? selectedProject : null
+    const dbProject = projects.find((p) => p.id === selectedProject.id)
+    if (!dbProject || dbProject.pathExists === false) return null
+    return {
+      ...selectedProject,
+      ...dbProject,
+    }
   }, [selectedProject, projects, isLoadingProjects])
+
+  useEffect(() => {
+    if (isLoadingConfig) return
+    rlog.app.info("Renderer mounted", {
+      isConfigured: Boolean(isConfigured),
+      hasSelectedProject: Boolean(selectedProject),
+    })
+    if (!isConfigured) {
+      rlog.app.warn("ZAI not configured — showing onboarding")
+    }
+  }, [isConfigured, isLoadingConfig, selectedProject])
 
   if (isLoadingConfig) {
     return <div className="h-screen w-screen bg-background" />

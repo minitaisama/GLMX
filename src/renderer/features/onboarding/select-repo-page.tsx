@@ -11,7 +11,7 @@ import { trpc } from "../../lib/trpc"
 import { selectedProjectAtom } from "../agents/atoms"
 
 export function SelectRepoPage() {
-  const [, setSelectedProject] = useAtom(selectedProjectAtom)
+  const [selectedProject, setSelectedProject] = useAtom(selectedProjectAtom)
   const [showClonePage, setShowClonePage] = useState(false)
   const [githubUrl, setGithubUrl] = useState("")
 
@@ -38,6 +38,7 @@ export function SelectRepoPage() {
           id: project.id,
           name: project.name,
           path: project.path,
+          pathExists: project.pathExists,
           gitRemoteUrl: project.gitRemoteUrl,
           gitProvider: project.gitProvider as
             | "github"
@@ -70,6 +71,7 @@ export function SelectRepoPage() {
           id: project.id,
           name: project.name,
           path: project.path,
+          pathExists: project.pathExists,
           gitRemoteUrl: project.gitRemoteUrl,
           gitProvider: project.gitProvider as
             | "github"
@@ -85,8 +87,39 @@ export function SelectRepoPage() {
     },
   })
 
+  const relinkFolder = trpc.projects.relinkFolder.useMutation({
+    onSuccess: (project) => {
+      if (!project) return
+
+      utils.projects.list.setData(undefined, (oldData) => {
+        if (!oldData) return [project]
+        return oldData.map((p) => (p.id === project.id ? project : p))
+      })
+
+      setSelectedProject({
+        id: project.id,
+        name: project.name,
+        path: project.path,
+        pathExists: project.pathExists,
+        gitRemoteUrl: project.gitRemoteUrl,
+        gitProvider: project.gitProvider as
+          | "github"
+          | "gitlab"
+          | "bitbucket"
+          | null,
+        gitOwner: project.gitOwner,
+        gitRepo: project.gitRepo,
+      })
+    },
+  })
+
   const handleOpenFolder = async () => {
     await openFolder.mutateAsync()
+  }
+
+  const handleRelinkFolder = async () => {
+    if (!selectedProject?.id) return
+    await relinkFolder.mutateAsync({ id: selectedProject.id })
   }
 
   const handleCloneFromGitHub = async () => {
@@ -200,6 +233,23 @@ export function SelectRepoPage() {
 
         {/* Content */}
         <div className="space-y-3">
+          {selectedProject ? (
+            <div className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-3 text-left">
+              <p className="text-sm font-medium text-foreground">
+                Workspace folder moved or renamed
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground break-all">
+                GLMX can&apos;t find: {selectedProject.path}
+              </p>
+              <button
+                onClick={handleRelinkFolder}
+                disabled={relinkFolder.isPending}
+                className="mt-3 inline-flex h-8 items-center rounded-md bg-foreground px-3 text-sm font-medium text-background transition-colors hover:bg-foreground/90 disabled:opacity-50"
+              >
+                {relinkFolder.isPending ? "Relinking..." : "Relink folder"}
+              </button>
+            </div>
+          ) : null}
           <button
             onClick={handleOpenFolder}
             disabled={openFolder.isPending}
