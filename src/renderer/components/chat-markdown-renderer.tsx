@@ -20,6 +20,31 @@ export function stripEmojis(text: string): string {
     .replace(/[\u{2700}-\u{27BF}]/gu, "") // Dingbats
 }
 
+function repairStreamingArtifacts(text: string): string {
+  if (!text) return text
+
+  const segments = text.split(/(```[\s\S]*?```)/g)
+
+  return segments
+    .map((segment) => {
+      if (segment.startsWith("```") && segment.endsWith("```")) {
+        return segment
+      }
+
+      return segment
+        // Recover JSX prop text accidentally surfaced as plain output.
+        .replace(/^(\s*)["']([^"\n]+?)["']\s*\/>\s*$/gm, "$1$2")
+        // Drop stray wrapper-closing lines that often leak after partial JSX output.
+        .replace(/^\s*[)}]\s*$/gm, "")
+        // Remove dangling self-closing fragment tails that survive without their opening tag.
+        .replace(/\s*\/>\s*$/gm, "")
+        // Collapse oversized gaps introduced by stripped artifact lines.
+        .replace(/\n{3,}/g, "\n\n")
+    })
+    .join("")
+    .trimEnd()
+}
+
 // Escape HTML special characters for safe rendering
 function escapeHtml(text: string): string {
   return text
@@ -291,7 +316,10 @@ export const ChatMarkdownRenderer = memo(function ChatMarkdownRenderer({
   const styles = sizeStyles[size]
 
   // Process content - strip emojis
-  const processedContent = useMemo(() => stripEmojis(content), [content])
+  const processedContent = useMemo(
+    () => repairStreamingArtifacts(stripEmojis(content)),
+    [content],
+  )
 
   // Memoize components object to prevent re-renders
   // This is critical for Streamdown's block-level memoization to work
@@ -720,7 +748,10 @@ export const MemoizedMarkdown = memo(
     const codeTheme = useCodeTheme()
 
     // Pre-process content - strip emojis
-    const processedContent = useMemo(() => stripEmojis(content), [content])
+    const processedContent = useMemo(
+      () => repairStreamingArtifacts(stripEmojis(content)),
+      [content],
+    )
 
     // Split into blocks - this recalculates when content changes,
     // but each block is individually memoized with content-based keys
