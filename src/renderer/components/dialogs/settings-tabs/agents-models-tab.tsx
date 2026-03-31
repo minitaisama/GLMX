@@ -33,6 +33,13 @@ import {
 } from "../../ui/dropdown-menu"
 import { Input } from "../../ui/input"
 import { Label } from "../../ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../ui/select"
 import { Switch } from "../../ui/switch"
 
 // Hook to detect narrow screen
@@ -57,6 +64,8 @@ const EMPTY_CONFIG: CustomClaudeConfig = {
   token: "",
   baseUrl: "",
 }
+
+const ZAI_MODELS = ["glm-5-turbo", "glm-5.1", "glm-4.7", "glm-4.5-air"]
 
 // Account row component
 function AccountRow({
@@ -286,6 +295,12 @@ export function AgentsModelsTab() {
   const setOpenAIKeyMutation = trpc.voice.setOpenAIKey.useMutation()
   const codexLogoutMutation = trpc.codex.logout.useMutation()
   const trpcUtils = trpc.useUtils()
+  const { data: zaiConfig } = trpc.zai.getConfig.useQuery()
+  const saveZaiConfigMutation = trpc.zai.saveConfig.useMutation()
+  const [zaiApiKey, setZaiApiKey] = useState("")
+  const [zaiOpusModel, setZaiOpusModel] = useState("glm-4.7")
+  const [zaiSonnetModel, setZaiSonnetModel] = useState("glm-4.7")
+  const [zaiHaikuModel, setZaiHaikuModel] = useState("glm-4.5-air")
 
   useEffect(() => {
     setModel(storedConfig.model)
@@ -300,6 +315,13 @@ export function AgentsModelsTab() {
   useEffect(() => {
     setCodexApiKey(storedCodexApiKey)
   }, [storedCodexApiKey])
+
+  useEffect(() => {
+    if (!zaiConfig) return
+    setZaiOpusModel(zaiConfig.opusModel)
+    setZaiSonnetModel(zaiConfig.sonnetModel)
+    setZaiHaikuModel(zaiConfig.haikuModel)
+  }, [zaiConfig])
 
   const savedConfigRef = useRef(storedConfig)
 
@@ -504,6 +526,33 @@ export function AgentsModelsTab() {
 
   const [isApiKeysOpen, setIsApiKeysOpen] = useState(false)
 
+  const handleSaveZaiConfig = async () => {
+    const trimmedKey = zaiApiKey.trim()
+    if (!trimmedKey && !zaiConfig?.hasKey) {
+      toast.error("Enter a ZAI API key before saving")
+      return
+    }
+
+    try {
+      await saveZaiConfigMutation.mutateAsync({
+        apiKey: trimmedKey || undefined,
+        baseUrl: zaiConfig?.baseUrl || "https://api.z.ai/api/anthropic",
+        opusModel: zaiOpusModel,
+        sonnetModel: zaiSonnetModel,
+        haikuModel: zaiHaikuModel,
+      })
+      setZaiApiKey("")
+      await trpcUtils.zai.getConfig.invalidate()
+      await trpcUtils.zai.getApiKey.invalidate()
+      await trpcUtils.zai.isConfigured.invalidate()
+      toast.success("ZAI config updated")
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to save ZAI config"
+      toast.error(message)
+    }
+  }
+
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
@@ -512,6 +561,101 @@ export function AgentsModelsTab() {
           <h3 className="text-sm font-semibold text-foreground">Models</h3>
         </div>
       )}
+
+      <div className="space-y-2">
+        <div className="pb-2">
+          <h4 className="text-sm font-medium text-foreground">ZAI Config</h4>
+          <p className="text-xs text-muted-foreground">
+            Manage the local ZAI key and GLM model mapping used by Claude Code.
+          </p>
+        </div>
+
+        <div className="bg-background rounded-lg border border-border p-4 space-y-4">
+          <div className="space-y-2">
+            <Label className="text-sm font-medium">Current key</Label>
+            <p className="text-xs text-muted-foreground">
+              {zaiConfig?.maskedKey || "Not configured"}
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-sm font-medium">Replace API key</Label>
+            <Input
+              type="password"
+              value={zaiApiKey}
+              onChange={(e) => setZaiApiKey(e.target.value)}
+              placeholder="Enter a new ZAI API key"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-sm font-medium">Base URL</Label>
+            <Input
+              value={zaiConfig?.baseUrl || "https://api.z.ai/api/anthropic"}
+              disabled
+            />
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Heavy tasks</Label>
+              <Select value={zaiOpusModel} onValueChange={setZaiOpusModel}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ZAI_MODELS.map((model) => (
+                    <SelectItem key={model} value={model}>
+                      {model}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Standard tasks</Label>
+              <Select value={zaiSonnetModel} onValueChange={setZaiSonnetModel}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ZAI_MODELS.map((model) => (
+                    <SelectItem key={model} value={model}>
+                      {model}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Fast tasks</Label>
+              <Select value={zaiHaikuModel} onValueChange={setZaiHaikuModel}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ZAI_MODELS.map((model) => (
+                    <SelectItem key={model} value={model}>
+                      {model}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="flex justify-end">
+            <Button
+              onClick={() => void handleSaveZaiConfig()}
+              disabled={saveZaiConfigMutation.isPending}
+            >
+              {saveZaiConfigMutation.isPending ? "Saving..." : "Save ZAI Config"}
+            </Button>
+          </div>
+        </div>
+      </div>
 
       {/* ===== Models Section ===== */}
       <div className="space-y-2">

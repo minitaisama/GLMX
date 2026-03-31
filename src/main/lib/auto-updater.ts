@@ -4,6 +4,8 @@ import { autoUpdater, type UpdateInfo, type ProgressInfo } from "electron-update
 import { readFileSync, writeFileSync, existsSync } from "fs"
 import { join } from "path"
 
+const UPDATES_ENABLED = false
+
 /**
  * IMPORTANT: Do NOT use lazy/dynamic imports for electron-updater!
  *
@@ -26,7 +28,7 @@ function initAutoUpdaterConfig() {
 }
 
 // CDN base URL for updates
-const CDN_BASE = "https://cdn.21st.dev/releases/desktop"
+const CDN_BASE = "https://z.ai"
 
 // Minimum interval between update checks (prevent spam on rapid focus/blur)
 const MIN_CHECK_INTERVAL = 60 * 1000 // 1 minute
@@ -88,6 +90,12 @@ function sendToAllRenderers(channel: string, data?: unknown) {
  */
 export async function initAutoUpdater(getWindows: () => BrowserWindow[]) {
   getAllWindows = getWindows
+
+  if (!UPDATES_ENABLED) {
+    registerIpcHandlers()
+    log.info("[AutoUpdater] Disabled for ZAI Agent fork")
+    return
+  }
 
   // Initialize config
   initAutoUpdaterConfig()
@@ -189,6 +197,9 @@ export async function initAutoUpdater(getWindows: () => BrowserWindow[]) {
 function registerIpcHandlers() {
   // Check for updates
   ipcMain.handle("update:check", async (_event, force?: boolean) => {
+    if (!UPDATES_ENABLED) {
+      return null
+    }
     if (!app.isPackaged) {
       log.info("[AutoUpdater] Skipping update check in dev mode")
       return null
@@ -220,6 +231,9 @@ function registerIpcHandlers() {
 
   // Download update
   ipcMain.handle("update:download", async () => {
+    if (!UPDATES_ENABLED) {
+      return false
+    }
     try {
       await autoUpdater.downloadUpdate()
       return true
@@ -231,6 +245,9 @@ function registerIpcHandlers() {
 
   // Install update and restart
   ipcMain.handle("update:install", () => {
+    if (!UPDATES_ENABLED) {
+      return
+    }
     log.info("[AutoUpdater] Installing update and restarting...")
     // Give renderer time to save state
     setTimeout(() => {
@@ -247,6 +264,9 @@ function registerIpcHandlers() {
 
   // Set update channel (latest = stable only, beta = stable + beta)
   ipcMain.handle("update:set-channel", async (_event, channel: string) => {
+    if (!UPDATES_ENABLED) {
+      return false
+    }
     if (channel !== "latest" && channel !== "beta") {
       log.warn(`[AutoUpdater] Invalid channel: ${channel}`)
       return false
@@ -270,6 +290,9 @@ function registerIpcHandlers() {
 
   // Get current update channel
   ipcMain.handle("update:get-channel", () => {
+    if (!UPDATES_ENABLED) {
+      return "latest"
+    }
     return getSavedChannel()
   })
 }
@@ -279,6 +302,9 @@ function registerIpcHandlers() {
  * @param force - Skip the minimum interval check
  */
 export async function checkForUpdates(force = false) {
+  if (!UPDATES_ENABLED) {
+    return Promise.resolve(null)
+  }
   if (!app.isPackaged) {
     log.info("[AutoUpdater] Skipping update check in dev mode")
     return Promise.resolve(null)
@@ -301,6 +327,9 @@ export async function checkForUpdates(force = false) {
  * Start downloading the update
  */
 export async function downloadUpdate() {
+  if (!UPDATES_ENABLED) {
+    return false
+  }
   if (!app.isPackaged) {
     log.info("[AutoUpdater] Skipping download in dev mode")
     return false
@@ -321,6 +350,9 @@ export async function downloadUpdate() {
  * This is more natural than checking on an interval
  */
 export function setupFocusUpdateCheck(_getWindows: () => BrowserWindow[]) {
+  if (!UPDATES_ENABLED) {
+    return
+  }
   // Listen for window focus events
   app.on("browser-window-focus", () => {
     log.info("[AutoUpdater] Window focused - checking for updates")
