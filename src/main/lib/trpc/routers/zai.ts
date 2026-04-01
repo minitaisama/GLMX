@@ -16,7 +16,6 @@ import {
   setActiveProvider,
   saveZaiConfig,
 } from "../../zai-config"
-import { getMainLogPath, readMainLogTail } from "../../logger"
 
 export const zaiRouter = router({
   listProviders: publicProcedure.query(() => {
@@ -116,8 +115,8 @@ export const zaiRouter = router({
 
   getLogTail: publicProcedure.query(async () => {
     return {
-      path: getMainLogPath(),
-      lines: await readMainLogTail(20),
+      path: logPaths.main(),
+      lines: readLogTail("main", 20),
     }
   }),
 
