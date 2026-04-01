@@ -147,6 +147,7 @@ import {
   buildRenameSuggestion,
   extractRenameContext,
 } from "../agents/utils/rename-context"
+import { SubChatContextMenu } from "../agents/ui/sub-chat-context-menu"
 
 // Feedback URL: uses env variable for hosted version, falls back to public Discord for open source
 const FEEDBACK_URL =
@@ -191,14 +192,19 @@ const ThreadContextSection = React.memo(function ThreadContextSection({
   chatId,
   activeSubChatId,
   openSubChatIds,
+  pinnedSubChatIds,
   allSubChats,
   onCreateThread,
   onSelectThread,
+  onTogglePinThread,
+  onRenameThread,
+  onArchiveThread,
   isCreating,
 }: {
   chatId: string
   activeSubChatId: string | null
   openSubChatIds: string[]
+  pinnedSubChatIds: string[]
   allSubChats: Array<{
     id: string
     name: string
@@ -207,8 +213,13 @@ const ThreadContextSection = React.memo(function ThreadContextSection({
   }>
   onCreateThread: () => void
   onSelectThread: (subChatId: string) => void
+  onTogglePinThread: (subChatId: string) => void
+  onRenameThread: (subChat: { id: string; name: string }) => void
+  onArchiveThread: (subChatId: string) => void
   isCreating: boolean
 }) {
+  const threadRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
+
   const subChatsById = useMemo(
     () => new Map(allSubChats.map((subChat) => [subChat.id, subChat])),
     [allSubChats],
@@ -242,6 +253,27 @@ const ThreadContextSection = React.memo(function ThreadContextSection({
     )
   }, [activeSubChatId, allSubChats, openSubChatIds, subChatsById])
 
+  useEffect(() => {
+    if (!activeSubChatId) return
+    const selectedThreadElement = threadRefs.current.get(activeSubChatId)
+    selectedThreadElement?.scrollIntoView({
+      block: "nearest",
+      behavior: "smooth",
+    })
+  }, [activeSubChatId, orderedThreads.length])
+
+  const handleArchiveOtherThreads = useCallback((subChatId: string) => {
+    orderedThreads
+      .filter((thread) => thread.id !== subChatId)
+      .forEach((thread) => onArchiveThread(thread.id))
+  }, [orderedThreads, onArchiveThread])
+
+  const handleArchiveThreadsBelow = useCallback((subChatId: string) => {
+    const currentThreadIndex = orderedThreads.findIndex((thread) => thread.id === subChatId)
+    if (currentThreadIndex === -1 || currentThreadIndex >= orderedThreads.length - 1) return
+    orderedThreads.slice(currentThreadIndex + 1).forEach((thread) => onArchiveThread(thread.id))
+  }, [orderedThreads, onArchiveThread])
+
   if (orderedThreads.length === 0) return null
 
   return (
@@ -271,36 +303,72 @@ const ThreadContextSection = React.memo(function ThreadContextSection({
           {orderedThreads.map((thread) => {
             const isActive = thread.id === activeSubChatId
             const isOpen = openSubChatIds.includes(thread.id)
+            const isPinned = pinnedSubChatIds.includes(thread.id)
+            const threadName = thread.name || "New thread"
 
             return (
-              <button
-                key={`${chatId}-${thread.id}`}
-                type="button"
-                onClick={() => onSelectThread(thread.id)}
-                className={cn(
-                  "w-full rounded-lg px-2.5 py-2 text-left transition-colors",
-                  isActive
-                    ? "bg-secondary text-foreground"
-                    : "hover:bg-muted/70 text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <div className="flex items-center gap-2">
-                  <div
+              <ContextMenu key={`${chatId}-${thread.id}`}>
+                <ContextMenuTrigger asChild>
+                  <button
+                    ref={(element) => {
+                      if (element) {
+                        threadRefs.current.set(thread.id, element)
+                      } else {
+                        threadRefs.current.delete(thread.id)
+                      }
+                    }}
+                    type="button"
+                    onClick={() => onSelectThread(thread.id)}
                     className={cn(
-                      "h-2 w-2 rounded-full flex-shrink-0",
-                      thread.mode === "plan" ? "bg-amber-500/90" : "bg-primary/80",
+                      "w-full rounded-lg px-2.5 py-2 text-left transition-colors",
+                      isActive
+                        ? "bg-secondary text-foreground"
+                        : "hover:bg-muted/70 text-muted-foreground hover:text-foreground",
                     )}
-                  />
-                  <span className="flex-1 truncate text-sm font-medium">
-                    {thread.name || "New thread"}
-                  </span>
-                  {isOpen && (
-                    <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                      Open
-                    </span>
+                  >
+                    <div className="flex items-center gap-2">
+                      <div
+                        className={cn(
+                          "h-2 w-2 rounded-full flex-shrink-0",
+                          thread.mode === "plan" ? "bg-amber-500/90" : "bg-primary/80",
+                        )}
+                      />
+                      <span className="flex-1 truncate text-sm font-medium">
+                        {threadName}
+                      </span>
+                      {isOpen && (
+                        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Open
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                </ContextMenuTrigger>
+                <SubChatContextMenu
+                  subChat={{
+                    id: thread.id,
+                    name: threadName,
+                    created_at: thread.updated_at ?? new Date().toISOString(),
+                    mode: thread.mode,
+                  }}
+                  isPinned={isPinned}
+                  onTogglePin={onTogglePinThread}
+                  onRename={(subChat) =>
+                    onRenameThread({
+                      id: subChat.id,
+                      name: subChat.name || "New thread",
+                    })}
+                  onArchive={onArchiveThread}
+                  onArchiveOthers={handleArchiveOtherThreads}
+                  onArchiveAllBelow={handleArchiveThreadsBelow}
+                  isOnlyChat={orderedThreads.length <= 1}
+                  currentIndex={orderedThreads.findIndex(
+                    (orderedThread) => orderedThread.id === thread.id,
                   )}
-                </div>
-              </button>
+                  totalCount={orderedThreads.length}
+                  chatId={chatId}
+                />
+              </ContextMenu>
             )
           })}
         </div>
@@ -1855,6 +1923,12 @@ export function AgentsSidebar({
     isRemote?: boolean
   } | null>(null)
   const [renameLoading, setRenameLoading] = useState(false)
+  const [renameThreadDialogOpen, setRenameThreadDialogOpen] = useState(false)
+  const [renamingThread, setRenamingThread] = useState<{
+    id: string
+    name: string
+  } | null>(null)
+  const [renameThreadLoading, setRenameThreadLoading] = useState(false)
 
   // Confirm archive dialog state
   const [confirmArchiveDialogOpen, setConfirmArchiveDialogOpen] = useState(false)
@@ -2092,13 +2166,17 @@ export function AgentsSidebar({
     chatId: subChatStoreChatId,
     activeSubChatId,
     openSubChatIds,
+    pinnedSubChatIds,
     allSubChats,
+    togglePinSubChat,
   } = useAgentSubChatStore(
     useShallow((state) => ({
       chatId: state.chatId,
       activeSubChatId: state.activeSubChatId,
       openSubChatIds: state.openSubChatIds,
+      pinnedSubChatIds: state.pinnedSubChatIds,
       allSubChats: state.allSubChats,
+      togglePinSubChat: state.togglePinSubChat,
     })),
   )
 
@@ -2303,6 +2381,12 @@ export function AgentsSidebar({
     setShowNewChatForm(false)
   }, [setShowNewChatForm])
 
+  const handleArchiveThread = useCallback((subChatId: string) => {
+    const store = useAgentSubChatStore.getState()
+    if (store.openSubChatIds.length <= 1) return
+    store.removeFromOpenSubChats(subChatId)
+  }, [])
+
   // Reset selected chat when project changes (but not on initial load)
   const prevProjectIdRef = useRef<string | null | undefined>(undefined)
   useEffect(() => {
@@ -2362,6 +2446,11 @@ export function AgentsSidebar({
     },
     onError: () => {
       toast.error("Failed to rename agent")
+    },
+  })
+  const renameSubChatMutation = trpc.chats.renameSubChat.useMutation({
+    onError: () => {
+      toast.error("Failed to rename thread")
     },
   })
 
@@ -2446,6 +2535,43 @@ export function AgentsSidebar({
     }
   }
 
+  const handleRenameThreadClick = useCallback((subChat: { id: string; name: string }) => {
+    setRenamingThread(subChat)
+    setRenameThreadDialogOpen(true)
+  }, [])
+
+  const handleRenameThreadSave = useCallback(
+    async (newName: string) => {
+      if (!renamingThread) return
+
+      const threadId = renamingThread.id
+      const previousName = renamingThread.name || "New thread"
+
+      useAgentSubChatStore.getState().updateSubChatName(threadId, newName)
+      setJustCreatedIds((prev) => {
+        if (!prev.has(threadId)) return prev
+        const next = new Set(prev)
+        next.delete(threadId)
+        return next
+      })
+
+      setRenameThreadLoading(true)
+      try {
+        await renameSubChatMutation.mutateAsync({
+          subChatId: threadId,
+          name: newName,
+        })
+        setRenameThreadDialogOpen(false)
+      } catch {
+        useAgentSubChatStore.getState().updateSubChatName(threadId, previousName)
+      } finally {
+        setRenameThreadLoading(false)
+        setRenamingThread(null)
+      }
+    },
+    [renamingThread, renameSubChatMutation, setJustCreatedIds],
+  )
+
   // Check if all selected chats are pinned
   const areAllSelectedPinned = useMemo(() => {
     if (selectedChatIds.size === 0) return false
@@ -2495,10 +2621,28 @@ export function AgentsSidebar({
     if (!agentChats)
       return { pinnedAgents: [], unpinnedAgents: [], filteredChats: [] }
 
-    const filtered = searchQuery.trim()
-      ? agentChats.filter((chat) =>
-          (chat.name ?? "").toLowerCase().includes(searchQuery.toLowerCase()),
-        )
+    const normalizedQuery = searchQuery.trim().toLowerCase()
+    const filtered = normalizedQuery
+      ? agentChats.filter((chat) => {
+          const project = chat.projectId
+            ? projects?.find((candidate) => candidate.id === chat.projectId)
+            : null
+          const searchableFields = [
+            chat.name ?? "",
+            chat.branch ?? "",
+            chat.baseBranch ?? "",
+            chat.meta?.repository ?? "",
+            project?.name ?? "",
+            project?.path ?? "",
+            project?.gitRemoteUrl ?? "",
+            project?.gitOwner ?? "",
+            project?.gitRepo ?? "",
+          ]
+
+          return searchableFields.some((value) =>
+            value.toLowerCase().includes(normalizedQuery),
+          )
+        })
       : agentChats
 
     const pinned = filtered.filter((chat) => pinnedChatIds.has(chat.id))
@@ -2509,7 +2653,7 @@ export function AgentsSidebar({
       unpinnedAgents: unpinned,
       filteredChats: [...pinned, ...unpinned],
     }
-  }, [searchQuery, agentChats, pinnedChatIds])
+  }, [searchQuery, agentChats, pinnedChatIds, projects])
 
   // Handle bulk archive of selected chats
   const handleBulkArchive = useCallback(() => {
@@ -3582,9 +3726,13 @@ export function AgentsSidebar({
               chatId={selectedChatId}
               activeSubChatId={activeSubChatId}
               openSubChatIds={openSubChatIds}
+              pinnedSubChatIds={pinnedSubChatIds}
               allSubChats={allSubChats}
               onCreateThread={handleCreateThread}
               onSelectThread={handleSelectThread}
+              onTogglePinThread={togglePinSubChat}
+              onRenameThread={handleRenameThreadClick}
+              onArchiveThread={handleArchiveThread}
               isCreating={isCreatingThread}
             />
           ) : null}
@@ -3744,6 +3892,19 @@ export function AgentsSidebar({
         placeholder="Workspace name"
         contextPreview={renameDialogSuggestion.contextPreview}
         suggestedName={renameDialogSuggestion.suggestedName}
+      />
+
+      <AgentsRenameSubChatDialog
+        isOpen={renameThreadDialogOpen}
+        onClose={() => {
+          setRenameThreadDialogOpen(false)
+          setRenamingThread(null)
+        }}
+        onSave={handleRenameThreadSave}
+        currentName={renamingThread?.name || ""}
+        isLoading={renameThreadLoading}
+        title="Rename thread"
+        placeholder="Thread name"
       />
 
       {/* Confirm Archive Dialog */}
