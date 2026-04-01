@@ -55,12 +55,9 @@ import {
   agentsSettingsDialogActiveTabAtom,
   anthropicOnboardingCompletedAtom,
   apiKeyOnboardingCompletedAtom,
-  codexApiKeyAtom,
-  codexOnboardingCompletedAtom,
   customClaudeConfigAtom,
   extendedThinkingEnabledAtom,
   hiddenModelsAtom,
-  normalizeCodexApiKey,
   normalizeCustomClaudeConfig,
   showOfflineModeFeaturesAtom,
   selectedOllamaModelAtom,
@@ -122,6 +119,8 @@ import {
   CLAUDE_MODELS,
   CODEX_MODELS,
   ENABLE_CODEX_PROVIDER,
+  getOpenAICompatibleSlotModelName,
+  normalizeOpenAICompatibleModelId,
   type CodexThinkingLevel,
 } from "../lib/models"
 // import type { PlanType } from "@/lib/config/subscription-plans"
@@ -167,9 +166,9 @@ function useAvailableModels() {
 
 // Agent providers
 const agents = [
-  { id: "claude-code", name: "Claude Code", hasModels: true },
+  { id: "claude-code", name: "Anthropic-Compatible", hasModels: true },
   { id: "cursor", name: "Cursor CLI", disabled: true },
-  { id: "codex", name: "OpenAI Codex", disabled: !ENABLE_CODEX_PROVIDER },
+  { id: "codex", name: "OpenAI-Compatible", disabled: !ENABLE_CODEX_PROVIDER },
 ]
 
 interface NewChatFormProps {
@@ -211,8 +210,21 @@ export function NewChatForm({
     if (isLoadingProjects) return selectedProject
     // After loading, validate against DB
     if (!projectsList) return null
-    const exists = projectsList.some((p) => p.id === selectedProject.id)
-    return exists ? selectedProject : null
+    const dbProject = projectsList.find((p) => p.id === selectedProject.id)
+    if (!dbProject) return null
+    return {
+      ...selectedProject,
+      name: dbProject.name,
+      path: dbProject.path,
+      gitRemoteUrl: dbProject.gitRemoteUrl,
+      gitProvider: dbProject.gitProvider as
+        | "github"
+        | "gitlab"
+        | "bitbucket"
+        | null,
+      gitOwner: dbProject.gitOwner,
+      gitRepo: dbProject.gitRepo,
+    }
   }, [selectedProject, projectsList, isLoadingProjects])
 
   // Clear invalid project from storage
@@ -244,14 +256,18 @@ export function NewChatForm({
   // Connection status for providers
   const anthropicOnboardingCompleted = useAtomValue(anthropicOnboardingCompletedAtom)
   const apiKeyOnboardingCompleted = useAtomValue(apiKeyOnboardingCompletedAtom)
-  const codexOnboardingCompleted = useAtomValue(codexOnboardingCompletedAtom)
   const { data: claudeCodeIntegration } =
     trpc.claudeCode.getIntegration.useQuery()
+  const { data: activeProvider } = trpc.zai.getActiveProvider.useQuery()
+  const { data: codexIntegration } = trpc.codex.getIntegration.useQuery()
   const isClaudeConnected =
     Boolean(claudeCodeIntegration?.isConnected) ||
     anthropicOnboardingCompleted ||
     apiKeyOnboardingCompleted ||
     hasCustomClaudeConfig
+  const isOpenAICompatibleActive = activeProvider?.type === "openai-compatible"
+  const isOpenAITransportConnected =
+    codexIntegration?.state === "connected_api_key"
   const setSettingsDialogOpen = useSetAtom(agentsSettingsDialogOpenAtom)
   const setSettingsActiveTab = useSetAtom(agentsSettingsDialogActiveTabAtom)
   const setJustCreatedIds = useSetAtom(justCreatedIdsAtom)
@@ -298,11 +314,24 @@ export function NewChatForm({
     if (!match) return null
     return `${match[1]}/${match[2].replace(/\.git$/, "")}`
   }
-  const enabledAgents = useMemo(
-    () => agents.filter((agent) => !agent.disabled),
-    [],
+  const availableAgents = useMemo(
+    () =>
+      agents.map((agent) =>
+        agent.id === "codex"
+          ? {
+              ...agent,
+              name: activeProvider?.name || "OpenAI-compatible",
+              disabled: !ENABLE_CODEX_PROVIDER || !isOpenAICompatibleActive,
+            }
+          : agent,
+      ),
+    [activeProvider?.name, isOpenAICompatibleActive],
   )
-  const fallbackAgent = enabledAgents[0] ?? agents[0]!
+  const enabledAgents = useMemo(
+    () => availableAgents.filter((agent) => !agent.disabled),
+    [availableAgents],
+  )
+  const fallbackAgent = enabledAgents[0] ?? availableAgents[0]!
   const [selectedAgent, setSelectedAgent] = useState(
     () =>
       enabledAgents.find((agent) => agent.id === lastSelectedAgentId) ||
@@ -345,21 +374,17 @@ export function NewChatForm({
     }
   }, [lastSelectedModelId])
 
-  const storedCodexApiKey = useAtomValue(codexApiKeyAtom)
-  const hasAppCodexApiKey = Boolean(normalizeCodexApiKey(storedCodexApiKey))
   const hiddenModels = useAtomValue(hiddenModelsAtom)
   const codexUiModels = useMemo(
-    () => {
-      let models = hasAppCodexApiKey
-        ? CODEX_MODELS.filter((model) => model.id !== "gpt-5.3-codex")
-        : CODEX_MODELS
-      return models.filter((model) => !hiddenModels.includes(model.id))
-    },
-    [hasAppCodexApiKey, hiddenModels],
+    () => CODEX_MODELS.filter((model) => !hiddenModels.includes(model.id)),
+    [hiddenModels],
   )
   const selectedCodexModel = useMemo(
     () =>
-      codexUiModels.find((model) => model.id === lastSelectedCodexModelId) ||
+      codexUiModels.find(
+        (model) =>
+          model.id === normalizeOpenAICompatibleModelId(lastSelectedCodexModelId),
+      ) ||
       codexUiModels[0] ||
       CODEX_MODELS[0]!,
     [codexUiModels, lastSelectedCodexModelId],
@@ -416,7 +441,10 @@ export function NewChatForm({
     enabledAgents.find((agent) => agent.id === "claude-code") || fallbackAgent
   const selectedModelLabel = useMemo(() => {
     if (selectedAgent.id === "codex") {
-      return selectedCodexModel.name
+      return `${selectedCodexModel.name} · ${getOpenAICompatibleSlotModelName(
+        selectedCodexModel.id,
+        activeProvider?.models,
+      )}`
     }
 
     if (availableModels.isOffline && availableModels.hasOllama) {
@@ -434,7 +462,9 @@ export function NewChatForm({
     return `${selectedModel.name} ${selectedModel.version}`
   }, [
     selectedAgent.id,
+    activeProvider?.models,
     selectedCodexModel.name,
+    selectedCodexModel.id,
     availableModels.isOffline,
     availableModels.hasOllama,
     currentOllamaModel,
@@ -1910,7 +1940,7 @@ export function NewChatForm({
                             onThinkingChange: setThinkingEnabled,
                       }}
                       codex={{
-                        isEnabled: ENABLE_CODEX_PROVIDER,
+                        isEnabled: ENABLE_CODEX_PROVIDER && isOpenAICompatibleActive,
                         models: codexUiModels,
                         selectedModelId: selectedCodexModel.id,
                         onSelectModel: (modelId) => {
@@ -1929,7 +1959,7 @@ export function NewChatForm({
                             },
                             selectedThinking: selectedCodexThinking,
                             onSelectThinking: setLastSelectedCodexThinking,
-                            isConnected: codexOnboardingCompleted,
+                            isConnected: isOpenAITransportConnected,
                           }}
                         />
                       </div>

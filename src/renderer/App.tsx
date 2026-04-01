@@ -5,11 +5,22 @@ import { Toaster } from "sonner"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { TRPCProvider } from "./contexts/TRPCProvider"
 import { WindowProvider, getInitialWindowParams } from "./contexts/WindowContext"
-import { selectedProjectAtom, selectedAgentChatIdAtom } from "./features/agents/atoms"
+import {
+  selectedProjectAtom,
+  selectedAgentChatIdAtom,
+  selectedChatIsRemoteAtom,
+} from "./features/agents/atoms"
 import { useAgentSubChatStore } from "./features/agents/stores/sub-chat-store"
 import { AgentsLayout } from "./features/layout/agents-layout"
 import { SelectRepoPage, ZaiOnboardingPage } from "./features/onboarding"
 import { appStore } from "./lib/jotai-store"
+import {
+  betaAutomationsEnabledAtom,
+  chatSourceModeAtom,
+  desktopViewAtom,
+  selectedTeamIdAtom,
+} from "./lib/atoms"
+import { isDesktopApp } from "./lib/utils/platform"
 import { VSCodeThemeProvider } from "./lib/themes/theme-provider"
 import { trpc } from "./lib/trpc"
 
@@ -33,8 +44,56 @@ function ThemedToaster() {
  */
 function AppContent() {
   const selectedProject = useAtomValue(selectedProjectAtom)
+  const setSelectedProject = useSetAtom(selectedProjectAtom)
   const setSelectedChatId = useSetAtom(selectedAgentChatIdAtom)
+  const setSelectedChatIsRemote = useSetAtom(selectedChatIsRemoteAtom)
+  const setSelectedTeamId = useSetAtom(selectedTeamIdAtom)
+  const setChatSourceMode = useSetAtom(chatSourceModeAtom)
+  const setBetaAutomationsEnabled = useSetAtom(betaAutomationsEnabledAtom)
+  const setDesktopView = useSetAtom(desktopViewAtom)
   const { setActiveSubChat, addToOpenSubChats, setChatId } = useAgentSubChatStore()
+
+  useEffect(() => {
+    if (!isDesktopApp()) return
+
+    const currentSelectedChatId = appStore.get(selectedAgentChatIdAtom)
+    const selectedChatIsRemote = appStore.get(selectedChatIsRemoteAtom)
+    const selectedTeamId = appStore.get(selectedTeamIdAtom)
+    const chatSourceMode = appStore.get(chatSourceModeAtom)
+    const desktopView = appStore.get(desktopViewAtom)
+    const automationsEnabled = appStore.get(betaAutomationsEnabledAtom)
+
+    // Clear stale cloud-only state restored from previous 1code / web sessions.
+    if (currentSelectedChatId?.startsWith("remote_")) {
+      setSelectedChatId(null)
+    }
+    if (selectedChatIsRemote) {
+      setSelectedChatIsRemote(false)
+    }
+    if (selectedTeamId) {
+      setSelectedTeamId(null)
+    }
+    if (chatSourceMode !== "local") {
+      setChatSourceMode("local")
+    }
+    if (automationsEnabled) {
+      setBetaAutomationsEnabled(false)
+    }
+    if (
+      desktopView === "automations" ||
+      desktopView === "automations-detail" ||
+      desktopView === "inbox"
+    ) {
+      setDesktopView(null)
+    }
+  }, [
+    setBetaAutomationsEnabled,
+    setChatSourceMode,
+    setDesktopView,
+    setSelectedChatId,
+    setSelectedChatIsRemote,
+    setSelectedTeamId,
+  ])
 
   // Apply initial window params (chatId/subChatId) when opening via "Open in new window"
   useEffect(() => {
@@ -85,9 +144,55 @@ function AppContent() {
     if (isLoadingProjects) return selectedProject
     // After loading, validate against DB
     if (!projects) return null
-    const exists = projects.some((p) => p.id === selectedProject.id)
-    return exists ? selectedProject : null
+    const dbProject = projects.find((p) => p.id === selectedProject.id)
+    if (!dbProject) return null
+    return {
+      ...selectedProject,
+      name: dbProject.name,
+      path: dbProject.path,
+      gitRemoteUrl: dbProject.gitRemoteUrl,
+      gitProvider: dbProject.gitProvider as
+        | "github"
+        | "gitlab"
+        | "bitbucket"
+        | null,
+      gitOwner: dbProject.gitOwner,
+      gitRepo: dbProject.gitRepo,
+    }
   }, [selectedProject, projects, isLoadingProjects])
+
+  useEffect(() => {
+    if (!selectedProject || !validatedProject) return
+
+    const hasSameIdentity =
+      selectedProject.id === validatedProject.id &&
+      selectedProject.name === validatedProject.name &&
+      selectedProject.path === validatedProject.path &&
+      selectedProject.gitRemoteUrl === validatedProject.gitRemoteUrl &&
+      selectedProject.gitProvider === validatedProject.gitProvider &&
+      selectedProject.gitOwner === validatedProject.gitOwner &&
+      selectedProject.gitRepo === validatedProject.gitRepo
+
+    if (hasSameIdentity) return
+
+    setSelectedProject(validatedProject)
+  }, [
+    selectedProject?.id,
+    selectedProject?.name,
+    selectedProject?.path,
+    selectedProject?.gitRemoteUrl,
+    selectedProject?.gitProvider,
+    selectedProject?.gitOwner,
+    selectedProject?.gitRepo,
+    validatedProject?.id,
+    validatedProject?.name,
+    validatedProject?.path,
+    validatedProject?.gitRemoteUrl,
+    validatedProject?.gitProvider,
+    validatedProject?.gitOwner,
+    validatedProject?.gitRepo,
+    setSelectedProject,
+  ])
 
   if (isLoadingConfig) {
     return <div className="h-screen w-screen bg-background" />

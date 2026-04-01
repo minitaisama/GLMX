@@ -161,6 +161,15 @@ export function ProjectSelector() {
     return {
       ...selectedProject,
       name: dbProject.name,
+      path: dbProject.path,
+      gitRemoteUrl: dbProject.gitRemoteUrl,
+      gitProvider: dbProject.gitProvider as
+        | "github"
+        | "gitlab"
+        | "bitbucket"
+        | null,
+      gitOwner: dbProject.gitOwner,
+      gitRepo: dbProject.gitRepo,
     }
   }, [selectedProject, projects, isLoadingProjects])
 

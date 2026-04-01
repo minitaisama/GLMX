@@ -3,6 +3,7 @@ import { useAtom, useAtomValue } from "jotai"
 import { useCallback, useEffect } from "react"
 import { selectedTeamIdAtom } from "../atoms"
 import { remoteApi, type RemoteChat, type RemoteChatWithSubChats } from "../remote-api"
+import { isDesktopApp } from "../utils/platform"
 
 /**
  * Fetch user's teams and auto-select first team if none selected
@@ -10,6 +11,7 @@ import { remoteApi, type RemoteChat, type RemoteChatWithSubChats } from "../remo
  */
 export function useUserTeams(enabled: boolean = true) {
   const [teamId, setTeamId] = useAtom(selectedTeamIdAtom)
+  const desktop = isDesktopApp()
 
   const query = useQuery({
     queryKey: ["user-teams"],
@@ -18,9 +20,14 @@ export function useUserTeams(enabled: boolean = true) {
     gcTime: Infinity,           // Never garbage collect
     refetchOnMount: true,       // Revalidate if stale
     refetchOnWindowFocus: false,
-    enabled,
+    enabled: enabled && !desktop,
     retry: 1,
   })
+
+  useEffect(() => {
+    if (!desktop || !teamId) return
+    setTeamId(null)
+  }, [desktop, teamId, setTeamId])
 
   // Auto-select first team OR fix stale teamId
   useEffect(() => {
@@ -59,11 +66,12 @@ export function useUserTeams(enabled: boolean = true) {
  */
 export function useRemoteChats() {
   const teamId = useAtomValue(selectedTeamIdAtom)
+  const desktop = isDesktopApp()
 
   return useQuery({
     queryKey: ["remote-chats", teamId],
     queryFn: () => remoteApi.getAgentChats(teamId!),
-    enabled: !!teamId,
+    enabled: !!teamId && !desktop,
     staleTime: 30 * 1000,       // Consider stale after 30s
     gcTime: 30 * 60 * 1000,     // Keep in cache 30 min
     refetchOnMount: true,       // Revalidate on mount
@@ -76,10 +84,12 @@ export function useRemoteChats() {
  * Fetch a single remote chat with all its sub-chats
  */
 export function useRemoteChat(chatId: string | null) {
+  const desktop = isDesktopApp()
+
   return useQuery({
     queryKey: ["remote-chat", chatId],
     queryFn: () => remoteApi.getAgentChat(chatId!),
-    enabled: !!chatId,
+    enabled: !!chatId && !desktop,
     staleTime: 60 * 1000,      // 1 minute
     gcTime: 30 * 60 * 1000,    // 30 minutes
   })
@@ -108,11 +118,12 @@ export function usePrefetchRemoteChat() {
  */
 export function useRemoteArchivedChats() {
   const teamId = useAtomValue(selectedTeamIdAtom)
+  const desktop = isDesktopApp()
 
   return useQuery({
     queryKey: ["remote-archived-chats", teamId],
     queryFn: () => remoteApi.getArchivedChats(teamId!),
-    enabled: !!teamId,
+    enabled: !!teamId && !desktop,
     staleTime: 5 * 60 * 1000,
     gcTime: 30 * 60 * 1000,
   })

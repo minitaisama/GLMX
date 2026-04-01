@@ -360,8 +360,8 @@ function CreateMcpServerForm({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="codex">OpenAI Codex</SelectItem>
-              <SelectItem value="claude-code">Claude Code</SelectItem>
+              <SelectItem value="codex">OpenAI-Compatible</SelectItem>
+              <SelectItem value="claude-code">Anthropic-Compatible</SelectItem>
             </SelectContent>
           </Select>
         </div>
