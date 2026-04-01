@@ -30,6 +30,8 @@ import {
   getProviderApiKey,
   saveProviderApiKey,
 } from "../../zai-config"
+import { logger } from "../../logger"
+import { beginLoggedModelCall } from "../../model-logger"
 import { publicProcedure, router } from "../index"
 import { resolveWorkspaceForChat } from "./chat-workspace"
 
@@ -114,6 +116,18 @@ type ActiveCodexStream = {
 }
 
 const activeStreams = new Map<string, ActiveCodexStream>()
+
+function getResponsePreview(message: unknown): string {
+  const parts = (message as { parts?: Array<{ type?: string; text?: string }> })?.parts
+  if (!Array.isArray(parts)) return ""
+  return parts
+    .filter((part) => part?.type === "text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 200)
+}
 
 /** Check if there are any active Codex streaming sessions */
 export function hasActiveCodexStreams(): boolean {
@@ -1148,6 +1162,36 @@ function preprocessCodexModelName(params: {
   return resolvePresetModel(params.modelId, params.preset)
 }
 
+function resolveAcpModelId(modelId: string): string {
+  const normalizedModel = modelId.trim().toLowerCase()
+  const [baseModel, effortRaw] = normalizedModel.split("/")
+  const effort =
+    effortRaw === "low" ||
+    effortRaw === "medium" ||
+    effortRaw === "high" ||
+    effortRaw === "xhigh"
+      ? effortRaw
+      : "medium"
+
+  if (baseModel === "heavy") {
+    return `gpt-5.2-codex/${effort === "low" ? "medium" : effort}`
+  }
+
+  if (baseModel === "fast") {
+    return `gpt-5.1-codex-mini/${effort === "low" ? "medium" : effort === "xhigh" ? "high" : effort}`
+  }
+
+  if (baseModel.includes("mini") || baseModel.includes("fast")) {
+    return `gpt-5.1-codex-mini/${effort === "low" ? "medium" : effort === "xhigh" ? "high" : effort}`
+  }
+
+  if (baseModel.includes("max") || baseModel.includes("5.3") || baseModel.includes("xhigh")) {
+    return `gpt-5.1-codex-max/${effort}`
+  }
+
+  return `gpt-5.2/${effort}`
+}
+
 function getAuthFingerprint(apiKey: string | null): string | null {
   const normalizedKey = apiKey?.trim()
   if (!normalizedKey) return null
@@ -1860,6 +1904,7 @@ export const codexRouter = router({
             const requestedModelId =
               extractCodexModelId(input.model) || DEFAULT_CODEX_MODEL
             const activeProvider = getActiveProvider()
+            const acpModelId = resolveAcpModelId(requestedModelId)
             const upstreamModelId = preprocessCodexModelName({
               modelId: requestedModelId,
               preset: activeProvider,
@@ -1975,7 +2020,28 @@ export const codexRouter = router({
               provider.getSessionId() ||
               input.sessionId ||
               getLastSessionId(existingMessages)
+            const modelRequest = beginLoggedModelCall({
+              sessionId: latestSessionId || input.subChatId,
+              provider: getActiveProvider().id,
+              baseUrl: getActiveProvider().baseUrl,
+              model: upstreamModelId,
+              messageCount: messagesForStream.length + 1,
+              systemPromptBytes: 0,
+              lastUserMessage: input.prompt,
+              toolCount: Object.keys(provider.tools || {}).length,
+            })
+            logger.agent.info("session_started", {
+              sessionId: latestSessionId || input.subChatId,
+              subChatId: input.subChatId,
+              projectPath: input.projectPath || input.cwd,
+              provider: getActiveProvider().id,
+              model: upstreamModelId,
+              acpModelId,
+            })
             let usagePromise: Promise<CodexUsageMetadata | null> | null = null
+            let firstChunkLogged = false
+            let finishReason: string | undefined
+            let toolCallCount = 0
 
             const resolveUsageOnce = (): Promise<CodexUsageMetadata | null> => {
               if (usagePromise) return usagePromise
@@ -1992,7 +2058,7 @@ export const codexRouter = router({
             }
 
             const result = streamText({
-              model: provider.languageModel(requestedModelId),
+              model: provider.languageModel(acpModelId),
               messages: [
                 {
                   role: "user",
@@ -2013,6 +2079,7 @@ export const codexRouter = router({
                 }
 
                 if (part.type === "finish") {
+                  finishReason = part.finishReason
                   return {
                     model: metadataModel,
                     sessionId,
@@ -2044,6 +2111,21 @@ export const codexRouter = router({
                     : responseMessage
                   const cleanedResponseMessage =
                     cleanAssistantMessageForPersistence(responseWithUsage)
+                  modelRequest.complete({
+                    httpStatus: 200,
+                    inputTokens: usageMetadata?.inputTokens,
+                    outputTokens: usageMetadata?.outputTokens,
+                    stopReason: finishReason,
+                    responsePreview: getResponsePreview(cleanedResponseMessage),
+                    toolCallCount,
+                  })
+                  logger.agent.info("session_ended", {
+                    sessionId: latestSessionId || input.subChatId,
+                    subChatId: input.subChatId,
+                    durationMs: Date.now() - startedAt,
+                    totalTokens: usageMetadata?.totalTokens,
+                    exitCode: 0,
+                  })
 
                   if (!cleanedResponseMessage) {
                     persistSubChatMessages(messagesForStream)
@@ -2071,6 +2153,15 @@ export const codexRouter = router({
               const { done, value } = await reader.read()
               if (done) break
 
+              modelRequest.markStreamChunk()
+              if (!firstChunkLogged) {
+                firstChunkLogged = true
+                logger.agent.info("first_token", {
+                  sessionId: latestSessionId || input.subChatId,
+                  latencyMs: Date.now() - startedAt,
+                })
+              }
+
               if (value?.type === "error") {
                 const normalized = extractCodexError(value)
 
@@ -2085,6 +2176,24 @@ export const codexRouter = router({
               if (value?.type === "finish") {
                 pendingFinishChunk = value
                 continue
+              }
+
+              if (value?.type === "tool-input-available") {
+                toolCallCount += 1
+                logger.agent.debug("tool_called", {
+                  sessionId: latestSessionId || input.subChatId,
+                  tool: value.toolName,
+                  inputPreview: JSON.stringify(value.input).slice(0, 200),
+                })
+              }
+
+              if (value?.type === "tool-output-available") {
+                logger.agent.debug("tool_result", {
+                  sessionId: latestSessionId || input.subChatId,
+                  tool: value.toolName,
+                  success: true,
+                  outputPreview: JSON.stringify(value.output).slice(0, 200),
+                })
               }
 
               safeEmit(value)
@@ -2108,6 +2217,13 @@ export const codexRouter = router({
             const normalized = extractCodexError(error)
 
             console.error("[codex] chat stream error:", error)
+            modelRequest.fail(error)
+            logger.agent.error("session_crashed", {
+              sessionId: latestSessionId || input.subChatId,
+              subChatId: input.subChatId,
+              error: normalized.message,
+              exitCode: null,
+            })
             if (isCodexAuthError(normalized)) {
               safeEmit({ type: "auth-error", errorText: normalized.message })
             } else {

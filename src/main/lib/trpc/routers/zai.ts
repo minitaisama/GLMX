@@ -1,6 +1,8 @@
+import { clipboard, shell } from "electron"
 import { z } from "zod"
 import { PROVIDER_PRESETS } from "../../../../shared/provider-presets"
 import { publicProcedure, router } from "../index"
+import { logPaths, logger, readLogTail } from "../../logger"
 import {
   DEFAULT_ZAI_CONFIG,
   getActiveProvider,
@@ -29,7 +31,13 @@ export const zaiRouter = router({
   setActiveProvider: publicProcedure
     .input(z.object({ presetId: z.string() }))
     .mutation(({ input }) => {
+      const previous = getActiveProvider()
       setActiveProvider(input.presetId)
+      const next = getActiveProvider()
+      logger.zai.info("active_provider_changed", {
+        previousProviderId: previous.id,
+        nextProviderId: next.id,
+      })
       return { success: true }
     }),
 
@@ -37,6 +45,10 @@ export const zaiRouter = router({
     .input(z.object({ presetId: z.string(), apiKey: z.string().min(4) }))
     .mutation(({ input }) => {
       saveProviderApiKey(input.presetId, input.apiKey)
+      logger.zai.info("provider_key_saved", {
+        providerId: input.presetId,
+        hasKey: true,
+      })
       return { success: true }
     }),
 
@@ -55,6 +67,11 @@ export const zaiRouter = router({
       const provider = saveProviderConfig(input.presetId, {
         baseUrl: input.baseUrl,
         headers: input.headers,
+        models: input.models,
+      })
+      logger.zai.info("provider_config_saved", {
+        providerId: input.presetId,
+        baseUrl: input.baseUrl,
         models: input.models,
       })
       return {
@@ -119,5 +136,54 @@ export const zaiRouter = router({
         haikuModel: input.haikuModel,
       })
       return { success: true }
+    }),
+
+  getModelLogTail: publicProcedure
+    .input(z.object({ lines: z.number().int().min(1).max(200).default(30) }).optional())
+    .query(({ input }) => {
+      return readLogTail("model", input?.lines ?? 30)
+    }),
+
+  getMainLogTail: publicProcedure
+    .input(z.object({ lines: z.number().int().min(1).max(200).default(30) }).optional())
+    .query(({ input }) => {
+      return readLogTail("main", input?.lines ?? 30)
+    }),
+
+  getLogPaths: publicProcedure.query(() => ({
+    main: logPaths.main(),
+    renderer: logPaths.renderer(),
+    model: logPaths.model(),
+    quality: logPaths.quality(),
+  })),
+
+  openLogFile: publicProcedure
+    .input(z.object({ kind: z.enum(["main", "renderer", "model", "quality"]) }))
+    .mutation(async ({ input }) => {
+      const logPath =
+        input.kind === "main"
+          ? logPaths.main()
+          : input.kind === "renderer"
+            ? logPaths.renderer()
+          : input.kind === "model"
+            ? logPaths.model()
+            : logPaths.quality()
+      await shell.openPath(logPath)
+      return { success: true, path: logPath }
+    }),
+
+  copyLogPath: publicProcedure
+    .input(z.object({ kind: z.enum(["main", "renderer", "model", "quality"]) }))
+    .mutation(({ input }) => {
+      const logPath =
+        input.kind === "main"
+          ? logPaths.main()
+          : input.kind === "renderer"
+            ? logPaths.renderer()
+          : input.kind === "model"
+            ? logPaths.model()
+            : logPaths.quality()
+      clipboard.writeText(logPath)
+      return { success: true, path: logPath }
     }),
 })
