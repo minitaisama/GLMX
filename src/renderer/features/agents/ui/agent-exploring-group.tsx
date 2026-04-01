@@ -1,12 +1,8 @@
 "use client"
 
 import { memo, useState, useEffect, useRef } from "react"
-import { useAtomValue } from "jotai"
-import { ChevronRight } from "lucide-react"
+import { ChevronRight, Loader2 } from "lucide-react"
 import { useFileOpen } from "../mentions"
-import { selectedProjectAtom } from "../atoms"
-import { AgentToolRegistry, getToolStatus } from "./agent-tool-registry"
-import { AgentToolCall } from "./agent-tool-call"
 import { areExploringGroupPropsEqual } from "./agent-tool-utils"
 import { cn } from "../../../lib/utils"
 
@@ -20,14 +16,80 @@ interface AgentExploringGroupProps {
 const MAX_VISIBLE_TOOLS = 5
 const TOOL_HEIGHT_PX = 24
 
+function truncateMiddle(value: string, max = 90): string {
+  if (value.length <= max) return value
+  const keep = Math.floor((max - 1) / 2)
+  return `${value.slice(0, keep)}…${value.slice(-keep)}`
+}
+
+function cleanInline(value: unknown): string {
+  if (typeof value !== "string") return ""
+  return value.replace(/\s+/g, " ").trim()
+}
+
+function formatPattern(value: unknown): string {
+  const raw = cleanInline(value)
+  if (!raw) return ""
+  // Keep format consistent and readable in compact rows
+  return raw.length > 64 ? `${raw.slice(0, 61)}...` : raw
+}
+
+function formatExplorationRow(part: any): { text: string; readPath?: string } {
+  const type = part?.type
+  if (type === "tool-Read") {
+    const filePath = cleanInline(part?.input?.file_path || part?.input?.path || part?.input?._acpDetail)
+    return {
+      text: filePath ? `Read ${truncateMiddle(filePath)}` : "Read file",
+      readPath: filePath || undefined,
+    }
+  }
+
+  if (type === "tool-Grep") {
+    const pattern = formatPattern(part?.input?.pattern || part?.input?.query || part?.input?._acpDetail)
+    const include = cleanInline(part?.input?.include || part?.input?.path || "")
+    if (pattern && include) return { text: `Searched for ${pattern} in ${truncateMiddle(include, 56)}` }
+    if (pattern) return { text: `Searched for ${pattern}` }
+    return { text: "Searched files" }
+  }
+
+  if (type === "tool-Glob") {
+    const pattern = formatPattern(part?.input?.pattern || part?.input?.path || part?.input?._acpDetail)
+    return { text: pattern ? `Listed ${pattern}` : "Listed files" }
+  }
+
+  if (type === "tool-WebSearch") {
+    const query = formatPattern(part?.input?.query || part?.input?._acpDetail)
+    return { text: query ? `Web searched ${query}` : "Web searched" }
+  }
+
+  if (type === "tool-WebFetch") {
+    const url = cleanInline(part?.input?.url || part?.input?._acpDetail)
+    return { text: url ? `Fetched ${truncateMiddle(url, 72)}` : "Fetched page" }
+  }
+
+  return { text: (part?.type || "Tool").replace("tool-", "") }
+}
+
+function formatSummary(fileCount: number, searchCount: number, listCount: number): string {
+  const parts: string[] = []
+  if (fileCount > 0) {
+    parts.push(`${fileCount} ${fileCount === 1 ? "file" : "files"}`)
+  }
+  if (searchCount > 0) {
+    parts.push(`${searchCount} ${searchCount === 1 ? "search" : "searches"}`)
+  }
+  if (listCount > 0) {
+    parts.push(`${listCount} ${listCount === 1 ? "list" : "lists"}`)
+  }
+  return parts.join(", ")
+}
+
 export const AgentExploringGroup = memo(function AgentExploringGroup({
   parts,
-  chatStatus,
+  chatStatus: _chatStatus,
   isStreaming,
 }: AgentExploringGroupProps) {
   const onOpenFile = useFileOpen()
-  const selectedProject = useAtomValue(selectedProjectAtom)
-  const projectPath = selectedProject?.path
   // Default: expanded while streaming, collapsed when done
   const [isExpanded, setIsExpanded] = useState(isStreaming)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -50,23 +112,14 @@ export const AgentExploringGroup = memo(function AgentExploringGroup({
 
   // Count files (Read, Grep, Glob) and searches (WebSearch, WebFetch)
   const fileCount = parts.filter((p) =>
-    ["tool-Read", "tool-Grep", "tool-Glob"].includes(p.type),
+    ["tool-Read"].includes(p.type),
   ).length
+  const listCount = parts.filter((p) => ["tool-Glob"].includes(p.type)).length
   const searchCount = parts.filter((p) =>
-    ["tool-WebSearch", "tool-WebFetch"].includes(p.type),
+    ["tool-Grep", "tool-WebSearch", "tool-WebFetch"].includes(p.type),
   ).length
 
-  // Build subtitle parts
-  const subtitleParts: string[] = []
-  if (fileCount > 0) {
-    subtitleParts.push(`${fileCount} ${fileCount === 1 ? "file" : "files"}`)
-  }
-  if (searchCount > 0) {
-    subtitleParts.push(
-      `${searchCount} ${searchCount === 1 ? "search" : "searches"}`,
-    )
-  }
-  const subtitle = subtitleParts.join(" ")
+  const subtitle = formatSummary(fileCount, searchCount, listCount)
 
   return (
     <div>
@@ -81,7 +134,7 @@ export const AgentExploringGroup = memo(function AgentExploringGroup({
               {isStreaming ? "Exploring" : "Explored"}
             </span>
             <span className="text-muted-foreground/60 whitespace-nowrap flex-shrink-0">
-              {subtitle}
+              {subtitle || `${parts.length} step${parts.length === 1 ? "" : "s"}`}
             </span>
             {/* Chevron right after text - rotates when expanded */}
             <ChevronRight
@@ -112,7 +165,7 @@ export const AgentExploringGroup = memo(function AgentExploringGroup({
           <div
             ref={scrollRef}
             className={cn(
-              "space-y-1.5",
+              "space-y-1",
               parts.length > MAX_VISIBLE_TOOLS &&
                 "overflow-y-auto scrollbar-hide",
             )}
@@ -123,32 +176,37 @@ export const AgentExploringGroup = memo(function AgentExploringGroup({
             }
           >
             {parts.map((part, idx) => {
-              const meta = AgentToolRegistry[part.type]
-              if (!meta) {
-                return (
-                  <div
-                    key={idx}
-                    className="text-xs text-muted-foreground py-0.5 px-2"
-                  >
-                    {part.type?.replace("tool-", "")}
-                  </div>
-                )
-              }
-              const { isPending, isError } = getToolStatus(part, chatStatus)
-              const handleClick = part.type === "tool-Read" && onOpenFile && part.input?.file_path
-                ? () => onOpenFile(part.input.file_path)
-                : undefined
+              const { text, readPath } = formatExplorationRow(part)
+              const isPending =
+                part.state !== "output-available" && part.state !== "output-error"
+              const isError = part.state === "output-error"
+              const canOpen = !!readPath && !!onOpenFile
               return (
-                <AgentToolCall
+                <button
                   key={idx}
-                  icon={meta.icon}
-                  title={meta.title(part)}
-                  subtitle={meta.subtitle?.(part)}
-                  tooltipContent={meta.tooltipContent?.(part, projectPath)}
-                  isPending={isPending}
-                  isError={isError}
-                  onClick={handleClick}
-                />
+                  type="button"
+                  onClick={canOpen ? () => onOpenFile(readPath!) : undefined}
+                  disabled={!canOpen}
+                  className={cn(
+                    "w-full text-left flex items-center gap-2 px-2 py-[2px] rounded text-xs transition-colors",
+                    canOpen
+                      ? "hover:bg-muted/50 text-muted-foreground hover:text-foreground cursor-pointer"
+                      : "text-muted-foreground cursor-default",
+                  )}
+                  title={canOpen && readPath ? readPath : undefined}
+                >
+                  {isPending ? (
+                    <Loader2 className="h-3 w-3 shrink-0 animate-spin text-muted-foreground/70" />
+                  ) : (
+                    <span
+                      className={cn(
+                        "h-1.5 w-1.5 rounded-full shrink-0",
+                        isError ? "bg-red-500/80" : "bg-muted-foreground/50",
+                      )}
+                    />
+                  )}
+                  <span className="truncate">{text}</span>
+                </button>
               )
             })}
           </div>
