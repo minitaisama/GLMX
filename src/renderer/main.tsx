@@ -65,6 +65,7 @@ const SAFE_GLOBAL_KEYS = new Set([
   "preferences:default-agent-mode",
 ])
 
+
 function normalizeStorageKey(key: string): string {
   return key.replace(/^[^:]+:/, "")
 }
@@ -153,6 +154,33 @@ function sanitizePersistedState(): void {
     if (normalizedKey === "agents:chat-source-mode") {
       localStorage.setItem(key, JSON.stringify("local"))
     }
+  }
+
+  // One-time theme migration:
+  // If user is still on default system dark theme (21st-dark) and has not explicitly
+  // picked a full theme, move default dark palette to Code King.
+  const selectedThemeKeys = allKeys.filter(
+    (key) => normalizeStorageKey(key) === "selected-full-theme-id",
+  )
+  const systemDarkThemeKeys = allKeys.filter(
+    (key) => normalizeStorageKey(key) === "system-dark-theme-id",
+  )
+
+  const selectedThemeKey = selectedThemeKeys[0] ?? "preferences:selected-full-theme-id"
+  const systemDarkThemeKey = systemDarkThemeKeys[0] ?? "preferences:system-dark-theme-id"
+
+  const selectedThemeValue = parseJsonSafely(selectedThemeKey, localStorage.getItem(selectedThemeKey))
+  const systemDarkThemeValue = parseJsonSafely(systemDarkThemeKey, localStorage.getItem(systemDarkThemeKey))
+
+  const usingSystemMode =
+    selectedThemeValue === null || typeof selectedThemeValue === "undefined"
+
+  if (selectedThemeValue === "21st-dark") {
+    localStorage.setItem(selectedThemeKey, JSON.stringify("code-king-dark"))
+  }
+
+  if (usingSystemMode && (systemDarkThemeValue === null || systemDarkThemeValue === "21st-dark")) {
+    localStorage.setItem(systemDarkThemeKey, JSON.stringify("code-king-dark"))
   }
 }
 
