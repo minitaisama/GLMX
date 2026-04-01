@@ -8,6 +8,7 @@ import {
   PROVIDER_PRESETS,
   type ProviderPreset,
 } from "../../shared/provider-presets"
+import { logger } from "./logger"
 
 const CLAUDE_SETTINGS_PATH = path.join(os.homedir(), ".claude", "settings.json")
 const ZAI_CONFIG_PATH = () => path.join(app.getPath("userData"), "zai-config.json")
@@ -115,8 +116,16 @@ function mergeProviderPreset(
 }
 
 export function readZaiConfig(): Partial<ZaiConfig> | null {
+  logger.app.info("zai_config_read_started")
   const storedConfig = readStoredZaiConfigSync()
   if (storedConfig) {
+    logger.app.info("zai_config_loaded", {
+      hasKey: Boolean(storedConfig.apiKey),
+      baseUrl: storedConfig.baseUrl,
+      opusModel: storedConfig.opusModel,
+      sonnetModel: storedConfig.sonnetModel,
+      haikuModel: storedConfig.haikuModel,
+    })
     return storedConfig
   }
 
@@ -128,7 +137,7 @@ export function readZaiConfig(): Partial<ZaiConfig> | null {
     return null
   }
 
-  return {
+  const config = {
     apiKey: fallbackKey,
     baseUrl: env.ANTHROPIC_BASE_URL?.trim() || DEFAULT_ZAI_CONFIG.baseUrl,
     opusModel:
@@ -156,6 +165,14 @@ export function readZaiConfig(): Partial<ZaiConfig> | null {
       },
     },
   }
+  logger.app.info("zai_config_loaded", {
+    hasKey: true,
+    baseUrl: config.baseUrl,
+    opusModel: config.opusModel,
+    sonnetModel: config.sonnetModel,
+    haikuModel: config.haikuModel,
+  })
+  return config
 }
 
 function writeClaudeSettingsForConfig(config: Partial<ZaiConfig>): void {
@@ -191,6 +208,11 @@ function writeClaudeSettingsForConfig(config: Partial<ZaiConfig>): void {
   }
 
   writeClaudeSettingsSync(updated)
+  logger.app.info("zai_config_written", {
+    target: CLAUDE_SETTINGS_PATH,
+    hasKey: Boolean(zaiKey),
+    baseUrl: updatedEnv.ANTHROPIC_BASE_URL,
+  })
 }
 
 export function getActiveProvider(): ProviderPreset {

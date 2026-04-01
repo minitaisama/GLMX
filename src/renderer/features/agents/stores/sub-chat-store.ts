@@ -49,6 +49,27 @@ interface AgentSubChatStore {
   reset: () => void
 }
 
+const areSubChatsEqual = (a: SubChatMeta[], b: SubChatMeta[]) => {
+  if (a === b) return true
+  if (a.length !== b.length) return false
+
+  for (let i = 0; i < a.length; i += 1) {
+    const left = a[i]
+    const right = b[i]
+    if (
+      left.id !== right.id ||
+      left.name !== right.name ||
+      left.created_at !== right.created_at ||
+      left.updated_at !== right.updated_at ||
+      left.mode !== right.mode
+    ) {
+      return false
+    }
+  }
+
+  return true
+}
+
 // localStorage helpers - store open tabs, active tab, and pinned tabs
 // Prefixed with windowId to isolate state per Electron window
 const getStorageKey = (chatId: string, type: "open" | "active" | "pinned" | "split" | "splitOrigin" | "splitPanes" | "splitRatios") =>
@@ -259,6 +280,8 @@ export const useAgentSubChatStore = create<AgentSubChatStore>((set, get) => ({
   },
 
   setAllSubChats: (subChats) => {
+    const { allSubChats } = get()
+    if (areSubChatsEqual(allSubChats, subChats)) return
     set({ allSubChats: subChats })
   },
 

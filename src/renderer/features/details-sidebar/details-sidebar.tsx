@@ -519,7 +519,7 @@ export function DetailsSidebar({
                     }
                     hideExpand
                   >
-                    <McpWidget />
+                    <McpWidget projectPath={worktreePath} />
                   </WidgetCard>
                 )
 

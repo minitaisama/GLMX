@@ -1,5 +1,5 @@
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
-import { ChevronLeft } from "lucide-react"
+import { ChevronLeft, Logs } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef } from "react"
 import {
   EyeOpenFilledIcon,
@@ -87,6 +87,11 @@ const ADVANCED_TABS_BASE = [
     id: "mcp" as SettingsTab,
     label: "MCP Servers",
     icon: OriginalMCPIcon,
+  },
+  {
+    id: "logs" as SettingsTab,
+    label: "Logs",
+    icon: Logs,
   },
   {
     id: "plugins" as SettingsTab,
