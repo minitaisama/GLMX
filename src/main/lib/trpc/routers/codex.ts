@@ -1860,11 +1860,11 @@ export const codexRouter = router({
             const requestedModelId =
               extractCodexModelId(input.model) || DEFAULT_CODEX_MODEL
             const activeProvider = getActiveProvider()
-            const selectedModelId = preprocessCodexModelName({
+            const upstreamModelId = preprocessCodexModelName({
               modelId: requestedModelId,
               preset: activeProvider,
             })
-            const metadataModel = selectedModelId
+            const metadataModel = upstreamModelId
 
             const lastMessage = existingMessages[existingMessages.length - 1]
             const isDuplicatePrompt =
@@ -1992,7 +1992,7 @@ export const codexRouter = router({
             }
 
             const result = streamText({
-              model: provider.languageModel(selectedModelId),
+              model: provider.languageModel(requestedModelId),
               messages: [
                 {
                   role: "user",
