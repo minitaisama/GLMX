@@ -15,6 +15,7 @@ import { readFileSync, existsSync, writeFileSync, mkdirSync } from "fs"
 import { createIPCHandler } from "trpc-electron/main"
 import { createAppRouter } from "../lib/trpc/routers"
 import { getAuthManager, handleAuthCode, getBaseUrl } from "../index"
+import { logger } from "../lib/logger"
 import { registerGitWatcherIPC } from "../lib/git/watcher"
 import { hasActiveClaudeSessions, abortAllClaudeSessions } from "../lib/trpc/routers/claude"
 import {
@@ -88,13 +89,13 @@ function registerIpcHandlers(): void {
   ipcMain.handle("app:set-badge", (event, count: number | null) => {
     const win = getWindowFromEvent(event)
     if (process.platform === "darwin") {
-      app.dock.setBadge(count ? String(count) : "")
+      app.dock?.setBadge(count ? String(count) : "")
     } else if (process.platform === "win32" && win) {
       // Windows: Update title with count as fallback
       if (count !== null && count > 0) {
-        win.setTitle(`ZAI Agent (${count})`)
+        win.setTitle(`GLMX (${count})`)
       } else {
-        win.setTitle("ZAI Agent")
+        win.setTitle("GLMX")
         win.setOverlayIcon(null, "")
       }
     }
@@ -261,7 +262,7 @@ function registerIpcHandlers(): void {
     const win = getWindowFromEvent(event)
     if (win) {
       // Show just the title, or default app name if empty
-      win.setTitle(title || "ZAI Agent")
+      win.setTitle(title || "GLMX")
     }
   })
 
@@ -631,7 +632,7 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
     minWidth: 500, // Allow narrow mobile-like mode
     minHeight: 600,
     show: false,
-    title: "ZAI Agent",
+    title: "GLMX",
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#09090b" : "#ffffff",
     // hiddenInset shows native traffic lights inset in the window
     // hiddenInset hides the native title bar but keeps traffic lights visible
@@ -677,6 +678,10 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
   // Show window when ready
   window.on("ready-to-show", () => {
     console.log("[Main] Window", window.id, "ready to show")
+    logger.app.info("window_created", {
+      windowId: window.id,
+      bounds: window.getBounds(),
+    })
     // Start with traffic lights hidden - the renderer will show them
     // after hydration based on the persisted sidebar state
     if (process.platform === "darwin") {
@@ -748,6 +753,26 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
     return { action: "deny" }
   })
 
+  // Mirror renderer console to renderer.log for packaged diagnostics.
+  window.webContents.on(
+    "console-message",
+    (_event, level, message, line, sourceId) => {
+      // Avoid recursive logging loops from electron-log output in renderer.
+      if (sourceId?.includes("electron-log")) return
+      if (message?.includes("(renderer)")) return
+      // Keep renderer.log high-signal: only warn/error/assert levels.
+      if (level < 1) return
+
+      logger.renderer.debug("console", {
+        windowId: window.id,
+        level,
+        message: message?.slice(0, 1000),
+        line,
+        sourceId,
+      })
+    },
+  )
+
   // Prevent window close if there are active streaming sessions
   window.on("close", (event) => {
     // Skip confirmation if app quit was already confirmed by the user
@@ -784,6 +809,7 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
   // Handle window close
   window.on("closed", () => {
     console.log(`[Main] Window ${window.id} closed`)
+    logger.app.info("window_closed", { windowId: window.id })
     // windowManager handles cleanup via 'closed' event listener
   })
 
@@ -828,7 +854,7 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
       // Pass params via hash for production (file:// URLs)
       const hashParams = new URLSearchParams()
       buildParams(hashParams)
-      window.loadFile(join(__dirname, "../renderer/index.html"), {
+      window.loadFile(join(app.getAppPath(), "out/renderer/index.html"), {
         hash: hashParams.toString(),
       })
     }
@@ -839,13 +865,15 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
       const loginPath = join(app.getAppPath(), "src/renderer/login.html")
       window.loadFile(loginPath)
     } else {
-      window.loadFile(join(__dirname, "../renderer/login.html"))
+      window.loadFile(join(app.getAppPath(), "out/renderer/login.html"))
     }
   }
 
   // Log page load - traffic light visibility is managed by the renderer
   window.webContents.on("did-finish-load", () => {
     console.log("[Main] Page finished loading in window", window.id)
+    logger.app.info("renderer_mounted", { windowId: window.id })
+    logger.renderer.info("mounted", { windowId: window.id })
   })
   window.webContents.on(
     "did-fail-load",
@@ -857,8 +885,21 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
         errorCode,
         errorDescription,
       )
+      logger.app.error("boot_failed", {
+        reason: errorDescription,
+        state: "did-fail-load",
+        windowId: window.id,
+        errorCode,
+      })
     },
   )
+  window.webContents.on("render-process-gone", (_event, details) => {
+    logger.app.error("window_crashed", {
+      windowId: window.id,
+      reason: details.reason,
+      exitCode: details.exitCode,
+    })
+  })
 
   return window
 }

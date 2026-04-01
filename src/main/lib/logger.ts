@@ -41,6 +41,8 @@ export const logger = {
   app: mainLog.scope("app"),
   renderer: rendererLog.scope("renderer"),
   agent: mainLog.scope("agent"),
+  session: mainLog.scope("session"),
+  perf: mainLog.scope("perf"),
   git: mainLog.scope("git"),
   fs: mainLog.scope("fs"),
   trpc: mainLog.scope("trpc"),

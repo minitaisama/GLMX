@@ -79,7 +79,7 @@ export class AuthManager {
     const platform = process.platform
     const arch = process.arch
     const version = app.getVersion()
-    return `ZAI Agent ${version} (${platform} ${arch})`
+    return `GLMX ${version} (${platform} ${arch})`
   }
 
   /**

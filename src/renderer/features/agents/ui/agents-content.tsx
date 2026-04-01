@@ -6,7 +6,10 @@ import { useQuery } from "@tanstack/react-query"
 // import { useSearchParams, useRouter } from "next/navigation" // Desktop doesn't use next/navigation
 // Desktop: mock Next.js navigation hooks
 const STABLE_SEARCH_PARAMS = { get: () => null as string | null }
-const STABLE_ROUTER = { push: () => {}, replace: () => {} }
+const STABLE_ROUTER = {
+  push: () => {},
+  replace: () => {},
+}
 const useSearchParams = () => STABLE_SEARCH_PARAMS
 const useRouter = () => STABLE_ROUTER
 // Desktop: mock Clerk hooks
@@ -274,7 +277,7 @@ export function AgentsContent() {
       }
       router.replace(url.pathname + url.search, { scroll: false })
     }
-  }, [selectedChatId, chatIdFromUrl, quickSwitchOpen])
+  }, [selectedChatId, chatIdFromUrl])
 
   // Auto-close sidebars on mobile devices
   useEffect(() => {

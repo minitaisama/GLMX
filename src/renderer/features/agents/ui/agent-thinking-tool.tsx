@@ -33,7 +33,7 @@ interface AgentThinkingToolProps {
   chatStatus?: string
 }
 
-const PREVIEW_LENGTH = 60
+const PREVIEW_LENGTH = 80
 const MAX_VISIBLE_EVENTS = 8
 const EVENT_ROW_HEIGHT_PX = 44
 const THINKING_VIEW_MODE_STORAGE_KEY = "glmx:thinking-view-mode"
@@ -263,7 +263,7 @@ export const AgentThinkingTool = memo(function AgentThinkingTool({
       {/* Header - always visible, clickable to toggle */}
       <div
         onClick={() => setIsExpanded(!isExpanded)}
-        className="group flex items-start gap-1.5 py-0.5 px-2 cursor-pointer"
+        className="group flex items-start gap-1.5 py-1 px-2 cursor-pointer"
       >
         <div className="flex-1 min-w-0 flex items-center gap-1">
           <div className="text-xs flex items-center gap-1.5 min-w-0">
@@ -353,7 +353,7 @@ export const AgentThinkingTool = memo(function AgentThinkingTool({
           <div
             ref={scrollRef}
             className={cn(
-              "px-2",
+              "px-3 py-1",
               isStreaming && events.length > MAX_VISIBLE_EVENTS && "overflow-y-auto scrollbar-hide",
             )}
             style={
