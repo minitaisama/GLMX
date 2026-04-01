@@ -243,7 +243,7 @@ export class ACPChatTransport implements ChatTransport<UIMessage> {
                   })
 
                 // Force stream status reset so retry can start once auth succeeds.
-                controller.error(new Error("Codex authentication required"))
+                controller.error(new Error("OpenAI-compatible authentication required"))
                 return
               }
 

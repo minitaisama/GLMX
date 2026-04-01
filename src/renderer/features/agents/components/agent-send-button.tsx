@@ -216,11 +216,22 @@ export function AgentSendButton({
     ? "shadow-[0_0_0_2px_white,0_0_0_4px_rgba(0,0,0,0.06)] dark:shadow-[0_0_0_2px_#1a1a1a,0_0_0_4px_rgba(255,255,255,0.08)]"
     : undefined
 
-  // Mode-specific styling (agent=foreground, plan=orange)
+  // Mode-specific styling (orange button, white arrow)
   // Recording state uses same styling as normal mode (wave indicator shows recording state)
-  const modeClass = mode === "plan"
-    ? "!bg-plan-mode hover:!bg-plan-mode/90 !text-background !shadow-none"
-    : "!bg-foreground hover:!bg-foreground/90 !text-background !shadow-none"
+  // Disabled state uses muted colors
+  const getModeClasses = () => {
+    const baseClasses = "!shadow-none rounded-full"
+
+    if (isDisabled) {
+      // Disabled: muted gray background, muted arrow
+      return `${baseClasses} !bg-muted/50 !text-muted-foreground cursor-not-allowed`
+    }
+
+    // Normal: orange background, white arrow
+    return `${baseClasses} !bg-plan-mode hover:!bg-plan-mode/90 !text-background`
+  }
+
+  const modeClass = getModeClasses()
 
   // Handle button interactions for voice mode
   // Supports both hold-to-talk AND click-to-toggle
