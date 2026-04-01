@@ -1,14 +1,96 @@
+import { clipboard, shell } from "electron"
 import { z } from "zod"
+import { PROVIDER_PRESETS } from "../../../../shared/provider-presets"
 import { publicProcedure, router } from "../index"
+import { logPaths, logger, readLogTail } from "../../logger"
 import {
   DEFAULT_ZAI_CONFIG,
+  getActiveProvider,
   getMaskedZaiKey,
+  getProviderApiKey,
+  getProviderConfig,
   getZaiConfig,
   isZaiConfigured,
+  saveProviderApiKey,
+  saveProviderConfig,
+  setActiveProvider,
   saveZaiConfig,
 } from "../../zai-config"
 
 export const zaiRouter = router({
+  listProviders: publicProcedure.query(() => {
+    return Object.values(PROVIDER_PRESETS).map((provider) =>
+      getProviderConfig(provider.id),
+    )
+  }),
+
+  getActiveProvider: publicProcedure.query(() => {
+    return getActiveProvider()
+  }),
+
+  setActiveProvider: publicProcedure
+    .input(z.object({ presetId: z.string() }))
+    .mutation(({ input }) => {
+      const previous = getActiveProvider()
+      setActiveProvider(input.presetId)
+      const next = getActiveProvider()
+      logger.zai.info("active_provider_changed", {
+        previousProviderId: previous.id,
+        nextProviderId: next.id,
+      })
+      return { success: true }
+    }),
+
+  saveProviderKey: publicProcedure
+    .input(z.object({ presetId: z.string(), apiKey: z.string().min(4) }))
+    .mutation(({ input }) => {
+      saveProviderApiKey(input.presetId, input.apiKey)
+      logger.zai.info("provider_key_saved", {
+        providerId: input.presetId,
+        hasKey: true,
+      })
+      return { success: true }
+    }),
+
+  saveProviderConfig: publicProcedure
+    .input(z.object({
+      presetId: z.string(),
+      baseUrl: z.string().min(1),
+      headers: z.record(z.string()).default({}),
+      models: z.object({
+        heavy: z.string().min(1),
+        standard: z.string().min(1),
+        fast: z.string().min(1),
+      }),
+    }))
+    .mutation(({ input }) => {
+      const provider = saveProviderConfig(input.presetId, {
+        baseUrl: input.baseUrl,
+        headers: input.headers,
+        models: input.models,
+      })
+      logger.zai.info("provider_config_saved", {
+        providerId: input.presetId,
+        baseUrl: input.baseUrl,
+        models: input.models,
+      })
+      return {
+        success: true,
+        provider,
+      }
+    }),
+
+  getProviderKeyStatus: publicProcedure.query(() => {
+    const activeProvider = getActiveProvider()
+    const presets = Object.values(PROVIDER_PRESETS)
+    return presets.map((provider) => ({
+      presetId: provider.id,
+      name: provider.name,
+      hasKey: Boolean(getProviderApiKey(provider.id)),
+      isActive: activeProvider.id === provider.id,
+    }))
+  }),
+
   isConfigured: publicProcedure.query(async () => {
     return await isZaiConfigured()
   }),
@@ -54,5 +136,54 @@ export const zaiRouter = router({
         haikuModel: input.haikuModel,
       })
       return { success: true }
+    }),
+
+  getModelLogTail: publicProcedure
+    .input(z.object({ lines: z.number().int().min(1).max(200).default(30) }).optional())
+    .query(({ input }) => {
+      return readLogTail("model", input?.lines ?? 30)
+    }),
+
+  getMainLogTail: publicProcedure
+    .input(z.object({ lines: z.number().int().min(1).max(200).default(30) }).optional())
+    .query(({ input }) => {
+      return readLogTail("main", input?.lines ?? 30)
+    }),
+
+  getLogPaths: publicProcedure.query(() => ({
+    main: logPaths.main(),
+    renderer: logPaths.renderer(),
+    model: logPaths.model(),
+    quality: logPaths.quality(),
+  })),
+
+  openLogFile: publicProcedure
+    .input(z.object({ kind: z.enum(["main", "renderer", "model", "quality"]) }))
+    .mutation(async ({ input }) => {
+      const logPath =
+        input.kind === "main"
+          ? logPaths.main()
+          : input.kind === "renderer"
+            ? logPaths.renderer()
+          : input.kind === "model"
+            ? logPaths.model()
+            : logPaths.quality()
+      await shell.openPath(logPath)
+      return { success: true, path: logPath }
+    }),
+
+  copyLogPath: publicProcedure
+    .input(z.object({ kind: z.enum(["main", "renderer", "model", "quality"]) }))
+    .mutation(({ input }) => {
+      const logPath =
+        input.kind === "main"
+          ? logPaths.main()
+          : input.kind === "renderer"
+            ? logPaths.renderer()
+          : input.kind === "model"
+            ? logPaths.model()
+            : logPaths.quality()
+      clipboard.writeText(logPath)
+      return { success: true, path: logPath }
     }),
 })

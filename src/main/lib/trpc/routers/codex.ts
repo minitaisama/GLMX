@@ -5,8 +5,10 @@ import { eq } from "drizzle-orm"
 import { app } from "electron"
 import { spawn, type ChildProcess } from "node:child_process"
 import { createHash } from "node:crypto"
-import { existsSync } from "node:fs"
+import { existsSync, mkdirSync } from "node:fs"
+import { createServer, request as httpRequest, type Server } from "node:http"
 import { readdir, readFile } from "node:fs/promises"
+import { request as httpsRequest } from "node:https"
 import { homedir } from "node:os"
 import { basename, dirname, join, sep } from "node:path"
 import { z } from "zod"
@@ -14,6 +16,7 @@ import {
   normalizeCodexAssistantMessage,
   normalizeCodexStreamChunk,
 } from "../../../../shared/codex-tool-normalizer"
+import { type ProviderPreset } from "../../../../shared/provider-presets"
 import { getClaudeShellEnvironment } from "../../claude/env"
 import { resolveProjectPathFromWorktree } from "../../claude-config"
 import { getDatabase, projects as projectsTable, subChats } from "../../db"
@@ -22,7 +25,15 @@ import {
   fetchMcpToolsStdio,
   type McpToolInfo,
 } from "../../mcp-auth"
+import {
+  getActiveProvider,
+  getProviderApiKey,
+  saveProviderApiKey,
+} from "../../zai-config"
+import { logger } from "../../logger"
+import { beginLoggedModelCall } from "../../model-logger"
 import { publicProcedure, router } from "../index"
+import { resolveWorkspaceForChat } from "./chat-workspace"
 
 const imageAttachmentSchema = z.object({
   base64Data: z.string(),
@@ -35,6 +46,8 @@ type CodexProviderSession = {
   cwd: string
   authFingerprint: string | null
   mcpFingerprint: string
+  providerFingerprint: string
+  requestedModelId: string
 }
 
 type CodexLoginSessionState =
@@ -95,6 +108,7 @@ type CodexMcpSnapshot = {
 }
 
 const providerSessions = new Map<string, CodexProviderSession>()
+const providerProxyServers = new Map<string, { baseUrl: string; server: Server }>()
 type ActiveCodexStream = {
   runId: string
   controller: AbortController
@@ -102,6 +116,18 @@ type ActiveCodexStream = {
 }
 
 const activeStreams = new Map<string, ActiveCodexStream>()
+
+function getResponsePreview(message: unknown): string {
+  const parts = (message as { parts?: Array<{ type?: string; text?: string }> })?.parts
+  if (!Array.isArray(parts)) return ""
+  return parts
+    .filter((part) => part?.type === "text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 200)
+}
 
 /** Check if there are any active Codex streaming sessions */
 export function hasActiveCodexStreams(): boolean {
@@ -136,7 +162,7 @@ const AUTH_HINTS = [
   "401",
   "403",
 ]
-const DEFAULT_CODEX_MODEL = "gpt-5.3-codex/high"
+const DEFAULT_CODEX_MODEL = "standard/high"
 const CODEX_MCP_TOOLS_FETCH_TIMEOUT_MS = 40_000
 const CODEX_USAGE_POLL_ATTEMPTS = 3
 const CODEX_USAGE_POLL_INTERVAL_MS = 200
@@ -1098,28 +1124,276 @@ function extractCodexModelId(rawModel: unknown): string | undefined {
   return normalizedModel
 }
 
-function preprocessCodexModelName(params: {
-  modelId: string
-  authConfig?: { apiKey: string }
-}): string {
-  const hasAppManagedApiKey = Boolean(params.authConfig?.apiKey?.trim())
-  if (!hasAppManagedApiKey) {
-    return params.modelId
+function resolvePresetModel(modelId: string, preset: ProviderPreset): string {
+  const normalizedModel = modelId.trim().toLowerCase()
+  const [baseModel] = normalizedModel.split("/")
+
+  if (baseModel === "heavy") {
+    return preset.models.heavy
   }
 
-  // All model IDs now match the real API; pass through as-is
-  return params.modelId
+  if (baseModel === "standard") {
+    return preset.models.standard
+  }
+
+  if (baseModel === "fast") {
+    return preset.models.fast
+  }
+
+  if (baseModel.includes("mini") || baseModel.includes("fast")) {
+    return preset.models.fast
+  }
+
+  if (
+    baseModel.includes("5.3") ||
+    baseModel.includes("max") ||
+    baseModel.includes("xhigh")
+  ) {
+    return preset.models.heavy
+  }
+
+  return preset.models.standard
 }
 
-function getAuthFingerprint(authConfig?: { apiKey: string }): string | null {
-  const apiKey = authConfig?.apiKey?.trim()
-  if (!apiKey) return null
-  return createHash("sha256").update(apiKey).digest("hex")
+function preprocessCodexModelName(params: {
+  modelId: string
+  preset: ProviderPreset
+}): string {
+  return resolvePresetModel(params.modelId, params.preset)
 }
 
-function buildCodexProviderEnv(authConfig?: { apiKey: string }): Record<string, string> {
-  // Prefer shell-derived values (notably PATH) so stdio MCP dependencies
-  // like pipx/npx resolve the same way as in MCP tool probing.
+function resolveAcpModelId(modelId: string): string {
+  const normalizedModel = modelId.trim().toLowerCase()
+  const [baseModel, effortRaw] = normalizedModel.split("/")
+  const effort =
+    effortRaw === "low" ||
+    effortRaw === "medium" ||
+    effortRaw === "high" ||
+    effortRaw === "xhigh"
+      ? effortRaw
+      : "medium"
+
+  if (baseModel === "heavy") {
+    return `gpt-5.2-codex/${effort === "low" ? "medium" : effort}`
+  }
+
+  if (baseModel === "fast") {
+    return `gpt-5.1-codex-mini/${effort === "low" ? "medium" : effort === "xhigh" ? "high" : effort}`
+  }
+
+  if (baseModel.includes("mini") || baseModel.includes("fast")) {
+    return `gpt-5.1-codex-mini/${effort === "low" ? "medium" : effort === "xhigh" ? "high" : effort}`
+  }
+
+  if (baseModel.includes("max") || baseModel.includes("5.3") || baseModel.includes("xhigh")) {
+    return `gpt-5.1-codex-max/${effort}`
+  }
+
+  return `gpt-5.2/${effort}`
+}
+
+function getAuthFingerprint(apiKey: string | null): string | null {
+  const normalizedKey = apiKey?.trim()
+  if (!normalizedKey) return null
+  return createHash("sha256").update(normalizedKey).digest("hex")
+}
+
+function getProviderFingerprint(preset: ProviderPreset): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        id: preset.id,
+        baseUrl: preset.baseUrl,
+        defaultHeaders: preset.defaultHeaders ?? {},
+        models: preset.models,
+      }),
+    )
+    .digest("hex")
+}
+
+async function ensureProviderBaseUrl(preset: ProviderPreset): Promise<string> {
+  if (!preset.defaultHeaders || Object.keys(preset.defaultHeaders).length === 0) {
+    return preset.baseUrl
+  }
+
+  const proxyKey = getProviderFingerprint(preset)
+  const existing = providerProxyServers.get(proxyKey)
+  if (existing) {
+    return existing.baseUrl
+  }
+
+  const targetUrl = new URL(preset.baseUrl)
+  const targetPathPrefix = targetUrl.pathname.replace(/\/$/, "")
+  const server = createServer((incomingReq, incomingRes) => {
+    const requestImpl = targetUrl.protocol === "https:" ? httpsRequest : httpRequest
+    const requestUrl = new URL(incomingReq.url || "/", "http://127.0.0.1")
+    const pathSegments = requestUrl.pathname.split("/").filter(Boolean)
+    const hasModelHintPrefix = pathSegments[0] === "glmx" && pathSegments.length >= 2
+    const modelHint = hasModelHintPrefix
+      ? decodeURIComponent(pathSegments[1] || "")
+      : undefined
+    const rewrittenPathname = hasModelHintPrefix
+      ? `/${pathSegments.slice(2).join("/")}`
+      : requestUrl.pathname
+    const incomingPath = `${rewrittenPathname || "/"}${requestUrl.search || ""}`
+    const pathOnly = rewrittenPathname || "/"
+
+    const forwardRequest = (bodyBuffer?: Buffer) => {
+      const upstreamPath = targetPathPrefix
+        ? `${targetPathPrefix}${incomingPath.startsWith("/") ? incomingPath : `/${incomingPath}`}`
+        : incomingPath
+      const forwardedHeaders = {
+        ...incomingReq.headers,
+        ...preset.defaultHeaders,
+        host: targetUrl.host,
+      }
+
+      if (bodyBuffer) {
+        forwardedHeaders["content-length"] = String(bodyBuffer.length)
+      }
+
+      const upstreamReq = requestImpl(
+        {
+          protocol: targetUrl.protocol,
+          hostname: targetUrl.hostname,
+          port: targetUrl.port || undefined,
+          method: incomingReq.method,
+          path: upstreamPath,
+          headers: forwardedHeaders,
+        },
+        (upstreamRes) => {
+          if (pathOnly === "/models") {
+            const chunks: Buffer[] = []
+            upstreamRes.on("data", (chunk) => {
+              chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+            })
+            upstreamRes.on("end", () => {
+              try {
+                const rawBody = Buffer.concat(chunks).toString("utf8")
+                const parsed = JSON.parse(rawBody) as {
+                  data?: Array<{ id?: string }>
+                }
+                const data = Array.isArray(parsed.data) ? parsed.data : []
+                const transformed = {
+                  models: data
+                    .map((model) => ({
+                      id: typeof model.id === "string" ? model.id : "",
+                      name: typeof model.id === "string" ? model.id : "",
+                      label: typeof model.id === "string" ? model.id : "",
+                    }))
+                    .filter((model) => model.id.length > 0),
+                  currentModelId: null,
+                }
+
+                incomingRes.writeHead(upstreamRes.statusCode || 502, {
+                  ...upstreamRes.headers,
+                  "content-type": "application/json; charset=utf-8",
+                })
+                incomingRes.end(JSON.stringify(transformed))
+              } catch {
+                incomingRes.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers)
+                incomingRes.end(Buffer.concat(chunks))
+              }
+            })
+            return
+          }
+
+          incomingRes.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers)
+          upstreamRes.pipe(incomingRes)
+        },
+      )
+
+      upstreamReq.on("error", (error) => {
+        incomingRes.writeHead(502, { "content-type": "text/plain; charset=utf-8" })
+        incomingRes.end(`Proxy request failed: ${error.message}`)
+      })
+
+      if (bodyBuffer) {
+        upstreamReq.end(bodyBuffer)
+        return
+      }
+
+      incomingReq.pipe(upstreamReq)
+    }
+
+    if (
+      modelHint &&
+      (pathOnly === "/responses" || pathOnly === "/chat/completions") &&
+      incomingReq.method &&
+      ["POST", "PUT", "PATCH"].includes(incomingReq.method.toUpperCase())
+    ) {
+      const requestChunks: Buffer[] = []
+      incomingReq.on("data", (chunk) => {
+        requestChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+      })
+      incomingReq.on("end", () => {
+        const rawBody = Buffer.concat(requestChunks).toString("utf8")
+        try {
+          const parsed = JSON.parse(rawBody) as Record<string, unknown>
+          parsed.model = preprocessCodexModelName({
+            modelId: modelHint,
+            preset,
+          })
+          forwardRequest(Buffer.from(JSON.stringify(parsed), "utf8"))
+        } catch {
+          forwardRequest(Buffer.concat(requestChunks))
+        }
+      })
+      return
+    }
+
+    forwardRequest()
+  })
+
+  const port = await new Promise<number>((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address()
+      if (!address || typeof address === "string") {
+        reject(new Error("Failed to bind 9router proxy"))
+        return
+      }
+      resolve(address.port)
+    })
+  })
+
+  const baseUrl = `http://127.0.0.1:${port}`
+  providerProxyServers.set(proxyKey, { baseUrl, server })
+  return baseUrl
+}
+
+async function resolveCodexProviderConfig(): Promise<{
+  preset: ProviderPreset
+  apiKey: string | null
+  baseUrl: string
+  isProxyBaseUrl: boolean
+  authFingerprint: string | null
+  providerFingerprint: string
+}> {
+  const preset = getActiveProvider()
+  const apiKey = getProviderApiKey(preset.id)
+  const isProxyBaseUrl = Boolean(
+    preset.defaultHeaders && Object.keys(preset.defaultHeaders).length > 0,
+  )
+  const baseUrl = await ensureProviderBaseUrl(preset)
+
+  return {
+    preset,
+    apiKey,
+    baseUrl,
+    isProxyBaseUrl,
+    authFingerprint: getAuthFingerprint(apiKey),
+    providerFingerprint: getProviderFingerprint(preset),
+  }
+}
+
+function buildCodexProviderEnv(params: {
+  apiKey: string | null
+  baseUrl: string
+  requestedModelId: string
+  isProxyBaseUrl: boolean
+  codexHome: string
+}): Record<string, string> {
   const env: Record<string, string> = {}
 
   for (const [key, value] of Object.entries(process.env)) {
@@ -1135,31 +1409,32 @@ function buildCodexProviderEnv(authConfig?: { apiKey: string }): Record<string, 
     }
   }
 
-  const apiKey = authConfig?.apiKey?.trim()
-  if (!apiKey) {
-    return env
-  }
+  const baseUrlWithHint = params.isProxyBaseUrl
+    ? `${params.baseUrl.replace(/\/$/, "")}/glmx/${encodeURIComponent(params.requestedModelId)}`
+    : params.baseUrl
 
   return {
     ...env,
-    CODEX_API_KEY: apiKey,
+    HOME: dirname(params.codexHome),
+    CODEX_HOME: params.codexHome,
+    OPENAI_API_KEY: params.apiKey ?? "",
+    OPENAI_BASE_URL: baseUrlWithHint,
   }
 }
 
-function getCodexAuthMethodId(authConfig?: {
-  apiKey: string
-}): "codex-api-key" | undefined {
-  const apiKey = authConfig?.apiKey?.trim()
-  if (!apiKey) {
+function getCodexAuthMethodId(apiKey: string | null): "openai-api-key" | undefined {
+  const normalizedKey = apiKey?.trim()
+  if (!normalizedKey) {
     return undefined
   }
 
-  // codex-acp advertises auth methods:
-  // - chatgpt
-  // - codex-api-key
-  // - openai-api-key
-  // For app-managed API key path we want deterministic key auth.
-  return "codex-api-key"
+  return "openai-api-key"
+}
+
+function getLegacyAuthConfigApiKey(authConfig?: { apiKey: string }): string | null {
+  const apiKey = authConfig?.apiKey?.trim()
+  if (!apiKey) return null
+  return apiKey
 }
 
 function buildUserParts(
@@ -1218,24 +1493,30 @@ function buildModelMessageContent(
   return content
 }
 
-function getOrCreateProvider(params: {
+async function getOrCreateProvider(params: {
   subChatId: string
   cwd: string
   mcpServers: CodexMcpServerForSession[]
   mcpFingerprint: string
+  requestedModelId: string
   existingSessionId?: string
   authConfig?: {
     apiKey: string
   }
-}): ACPProvider {
-  const authFingerprint = getAuthFingerprint(params.authConfig)
+}): Promise<ACPProvider> {
+  const providerConfig = await resolveCodexProviderConfig()
+  const fallbackApiKey = getLegacyAuthConfigApiKey(params.authConfig)
+  const apiKey = providerConfig.apiKey ?? fallbackApiKey
+  const authFingerprint = getAuthFingerprint(apiKey)
   const existing = providerSessions.get(params.subChatId)
 
   if (
     existing &&
     existing.cwd === params.cwd &&
     existing.authFingerprint === authFingerprint &&
-    existing.mcpFingerprint === params.mcpFingerprint
+    existing.mcpFingerprint === params.mcpFingerprint &&
+    existing.providerFingerprint === providerConfig.providerFingerprint &&
+    existing.requestedModelId === params.requestedModelId
   ) {
     return existing.provider
   }
@@ -1245,17 +1526,30 @@ function getOrCreateProvider(params: {
     providerSessions.delete(params.subChatId)
   }
 
-  const hasAppManagedApiKey = Boolean(params.authConfig?.apiKey?.trim())
+  const hasAppManagedApiKey = Boolean(apiKey)
   // When app-managed key auth is used, avoid resuming older persisted session IDs.
   // Those can be tied to unauthenticated/CLI-auth state and trigger auth loops.
   const existingSessionIdForProvider = hasAppManagedApiKey
     ? undefined
     : params.existingSessionId
 
+  const codexHome = join(
+    app.getPath("userData"),
+    "codex-provider-state",
+    inputSafePathSegment(params.subChatId),
+  )
+  mkdirSync(codexHome, { recursive: true })
+
   const provider = createACPProvider({
     command: resolveCodexAcpBinaryPath(),
-    env: buildCodexProviderEnv(params.authConfig),
-    authMethodId: getCodexAuthMethodId(params.authConfig),
+    env: buildCodexProviderEnv({
+      apiKey,
+      baseUrl: providerConfig.baseUrl,
+      requestedModelId: params.requestedModelId,
+      isProxyBaseUrl: providerConfig.isProxyBaseUrl,
+      codexHome,
+    }),
+    authMethodId: getCodexAuthMethodId(apiKey),
     session: {
       cwd: params.cwd,
       mcpServers: params.mcpServers,
@@ -1271,9 +1565,16 @@ function getOrCreateProvider(params: {
     cwd: params.cwd,
     authFingerprint,
     mcpFingerprint: params.mcpFingerprint,
+    providerFingerprint: providerConfig.providerFingerprint,
+    requestedModelId: params.requestedModelId,
   })
 
   return provider
+}
+
+function inputSafePathSegment(value: string): string {
+  const normalized = value.trim().replace(/[^a-zA-Z0-9._-]+/g, "-")
+  return normalized.length > 0 ? normalized : "default"
 }
 
 function cleanupProvider(subChatId: string): void {
@@ -1285,113 +1586,50 @@ function cleanupProvider(subChatId: string): void {
 }
 
 export const codexRouter = router({
-  getIntegration: publicProcedure.query(async () => {
-    const result = await runCodexCli(["login", "status"])
-    const combinedOutput = [result.stdout, result.stderr]
-      .filter((chunk) => chunk.trim().length > 0)
-      .join("\n")
-      .trim()
-
-    const state = normalizeCodexIntegrationState(combinedOutput)
+  getIntegration: publicProcedure.query(() => {
+    const preset = getActiveProvider()
+    const apiKey = getProviderApiKey(preset.id)
+    const state: CodexIntegrationState = apiKey
+      ? "connected_api_key"
+      : "not_logged_in"
 
     return {
       state,
-      isConnected:
-        state === "connected_chatgpt" || state === "connected_api_key",
-      rawOutput: combinedOutput,
-      exitCode: result.exitCode,
+      isConnected: Boolean(apiKey),
+      rawOutput: `Active provider: ${preset.name}`,
+      exitCode: 0,
+      provider: preset,
     }
   }),
 
-  logout: publicProcedure.mutation(async () => {
-    const logoutResult = await runCodexCli(["logout"])
-    const statusResult = await runCodexCli(["login", "status"])
-
-    const statusOutput = [statusResult.stdout, statusResult.stderr]
-      .filter((chunk) => chunk.trim().length > 0)
-      .join("\n")
-      .trim()
-
-    const state = normalizeCodexIntegrationState(statusOutput)
-    const isConnected =
-      state === "connected_chatgpt" || state === "connected_api_key"
-
-    if (isConnected) {
-      throw new Error("Failed to log out from Codex. Please try again.")
-    }
-
-    const logoutOutput = [logoutResult.stdout, logoutResult.stderr]
-      .filter((chunk) => chunk.trim().length > 0)
-      .join("\n")
-      .trim()
+  logout: publicProcedure.mutation(() => {
+    const preset = getActiveProvider()
+    saveProviderApiKey(preset.id, "")
 
     return {
       success: true,
-      state,
+      state: "not_logged_in" as const,
       isConnected: false,
-      logoutExitCode: logoutResult.exitCode,
-      logoutOutput,
-      statusOutput,
+      logoutExitCode: 0,
+      logoutOutput: `Cleared API key for ${preset.name}`,
+      statusOutput: `Active provider: ${preset.name}`,
     }
   }),
 
   startLogin: publicProcedure.mutation(() => {
-    const existingSession = getActiveLoginSession()
-    if (existingSession) {
-      return toLoginSessionResponse(existingSession)
-    }
-
-    const codexCliPath = resolveBundledCodexCliPath()
+    const preset = getActiveProvider()
     const sessionId = crypto.randomUUID()
-
-    const child = spawn(codexCliPath, ["login"], {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
-      windowsHide: true,
-    })
-
     const session: CodexLoginSession = {
       id: sessionId,
-      process: child,
-      state: "running",
-      output: "",
+      process: null,
+      state: "error",
+      output: `Interactive Codex login is disabled. Save an API key for ${preset.name} in Settings > Providers.`,
       url: null,
-      error: null,
-      exitCode: null,
+      error: `Provider ${preset.name} uses app-managed API keys.`,
+      exitCode: 1,
     }
-
-    const handleChunk = (chunk: Buffer | string) => {
-      appendLoginOutput(session, chunk.toString("utf8"))
-    }
-
-    child.stdout.on("data", handleChunk)
-    child.stderr.on("data", handleChunk)
-
-    child.once("error", (error) => {
-      session.state = "error"
-      session.error = `[codex] Failed to start login flow: ${error.message}`
-      session.process = null
-    })
-
-    child.once("close", (exitCode) => {
-      session.exitCode = exitCode
-      session.process = null
-
-      if (session.state === "cancelled") {
-        return
-      }
-
-      if (exitCode === 0) {
-        session.state = "success"
-        session.error = null
-      } else {
-        session.state = "error"
-        session.error = session.error || `Codex login exited with code ${exitCode ?? "unknown"}`
-      }
-    })
 
     loginSessions.set(sessionId, session)
-
     return toLoginSessionResponse(session)
   }),
 
@@ -1557,24 +1795,30 @@ export const codexRouter = router({
 
   chat: publicProcedure
     .input(
-      z.object({
-        subChatId: z.string(),
-        chatId: z.string(),
-        runId: z.string(),
-        prompt: z.string(),
-        model: z.string().optional(),
-        cwd: z.string(),
-        projectPath: z.string().optional(),
-        mode: z.enum(["plan", "agent"]).default("agent"),
-        sessionId: z.string().optional(),
-        forceNewSession: z.boolean().optional(),
-        images: z.array(imageAttachmentSchema).optional(),
-        authConfig: z
-          .object({
-            apiKey: z.string().min(1),
-          })
-          .optional(),
-      }),
+      z
+        .object({
+          subChatId: z.string(),
+          chatId: z.string(),
+          runId: z.string(),
+          prompt: z.string(),
+          model: z.string().optional(),
+          cwd: z.string(),
+          projectPath: z.string().optional(),
+          mode: z.enum(["plan", "agent"]).default("agent"),
+          sessionId: z.string().optional(),
+          forceNewSession: z.boolean().optional(),
+          images: z.array(imageAttachmentSchema).optional(),
+          authConfig: z
+            .object({
+              apiKey: z.string().min(1),
+            })
+            .optional(),
+        })
+        .transform((value) => ({
+          ...value,
+          cwd: value.cwd.trim(),
+          projectPath: value.projectPath?.trim() || undefined,
+        })),
     )
     .subscription(({ input }) => {
       return observable<any>((emit) => {
@@ -1616,6 +1860,34 @@ export const codexRouter = router({
 
         ;(async () => {
           try {
+            const resolvedWorkspace = resolveWorkspaceForChat(
+              input.chatId,
+              input.cwd,
+              input.projectPath,
+            )
+
+            if (resolvedWorkspace) {
+              input.cwd = resolvedWorkspace.cwd
+              input.projectPath = resolvedWorkspace.projectPath
+            }
+
+            if (!existsSync(input.cwd)) {
+              safeEmit({
+                type: "error",
+                errorText: `Invalid local workspace: Local workspace path does not exist: ${input.cwd}`,
+                debugInfo: {
+                  category: "INVALID_LOCAL_WORKSPACE",
+                  context: "Invalid local workspace",
+                  cwd: input.cwd,
+                  mode: input.mode,
+                  projectPath: input.projectPath,
+                },
+              })
+              safeEmit({ type: "finish" })
+              safeComplete()
+              return
+            }
+
             const db = getDatabase()
 
             const existingSubChat = db
@@ -1631,11 +1903,13 @@ export const codexRouter = router({
             const existingMessages = parseStoredMessages(existingSubChat.messages)
             const requestedModelId =
               extractCodexModelId(input.model) || DEFAULT_CODEX_MODEL
-            const selectedModelId = preprocessCodexModelName({
+            const activeProvider = getActiveProvider()
+            const acpModelId = resolveAcpModelId(requestedModelId)
+            const upstreamModelId = preprocessCodexModelName({
               modelId: requestedModelId,
-              authConfig: input.authConfig,
+              preset: activeProvider,
             })
-            const metadataModel = selectedModelId
+            const metadataModel = upstreamModelId
 
             const lastMessage = existingMessages[existingMessages.length - 1]
             const isDuplicatePrompt =
@@ -1728,11 +2002,12 @@ export const codexRouter = router({
               console.error("[codex] Failed to resolve MCP servers:", mcpError)
             }
 
-            const provider = getOrCreateProvider({
+            const provider = await getOrCreateProvider({
               subChatId: input.subChatId,
               cwd: input.cwd,
               mcpServers: mcpSnapshot.mcpServersForSession,
               mcpFingerprint: mcpSnapshot.fingerprint,
+              requestedModelId,
               existingSessionId:
                 input.forceNewSession
                   ? undefined
@@ -1745,7 +2020,28 @@ export const codexRouter = router({
               provider.getSessionId() ||
               input.sessionId ||
               getLastSessionId(existingMessages)
+            const modelRequest = beginLoggedModelCall({
+              sessionId: latestSessionId || input.subChatId,
+              provider: getActiveProvider().id,
+              baseUrl: getActiveProvider().baseUrl,
+              model: upstreamModelId,
+              messageCount: messagesForStream.length + 1,
+              systemPromptBytes: 0,
+              lastUserMessage: input.prompt,
+              toolCount: Object.keys(provider.tools || {}).length,
+            })
+            logger.agent.info("session_started", {
+              sessionId: latestSessionId || input.subChatId,
+              subChatId: input.subChatId,
+              projectPath: input.projectPath || input.cwd,
+              provider: getActiveProvider().id,
+              model: upstreamModelId,
+              acpModelId,
+            })
             let usagePromise: Promise<CodexUsageMetadata | null> | null = null
+            let firstChunkLogged = false
+            let finishReason: string | undefined
+            let toolCallCount = 0
 
             const resolveUsageOnce = (): Promise<CodexUsageMetadata | null> => {
               if (usagePromise) return usagePromise
@@ -1762,7 +2058,7 @@ export const codexRouter = router({
             }
 
             const result = streamText({
-              model: provider.languageModel(selectedModelId),
+              model: provider.languageModel(acpModelId),
               messages: [
                 {
                   role: "user",
@@ -1783,6 +2079,7 @@ export const codexRouter = router({
                 }
 
                 if (part.type === "finish") {
+                  finishReason = part.finishReason
                   return {
                     model: metadataModel,
                     sessionId,
@@ -1814,6 +2111,21 @@ export const codexRouter = router({
                     : responseMessage
                   const cleanedResponseMessage =
                     cleanAssistantMessageForPersistence(responseWithUsage)
+                  modelRequest.complete({
+                    httpStatus: 200,
+                    inputTokens: usageMetadata?.inputTokens,
+                    outputTokens: usageMetadata?.outputTokens,
+                    stopReason: finishReason,
+                    responsePreview: getResponsePreview(cleanedResponseMessage),
+                    toolCallCount,
+                  })
+                  logger.agent.info("session_ended", {
+                    sessionId: latestSessionId || input.subChatId,
+                    subChatId: input.subChatId,
+                    durationMs: Date.now() - startedAt,
+                    totalTokens: usageMetadata?.totalTokens,
+                    exitCode: 0,
+                  })
 
                   if (!cleanedResponseMessage) {
                     persistSubChatMessages(messagesForStream)
@@ -1841,6 +2153,15 @@ export const codexRouter = router({
               const { done, value } = await reader.read()
               if (done) break
 
+              modelRequest.markStreamChunk()
+              if (!firstChunkLogged) {
+                firstChunkLogged = true
+                logger.agent.info("first_token", {
+                  sessionId: latestSessionId || input.subChatId,
+                  latencyMs: Date.now() - startedAt,
+                })
+              }
+
               if (value?.type === "error") {
                 const normalized = extractCodexError(value)
 
@@ -1855,6 +2176,24 @@ export const codexRouter = router({
               if (value?.type === "finish") {
                 pendingFinishChunk = value
                 continue
+              }
+
+              if (value?.type === "tool-input-available") {
+                toolCallCount += 1
+                logger.agent.debug("tool_called", {
+                  sessionId: latestSessionId || input.subChatId,
+                  tool: value.toolName,
+                  inputPreview: JSON.stringify(value.input).slice(0, 200),
+                })
+              }
+
+              if (value?.type === "tool-output-available") {
+                logger.agent.debug("tool_result", {
+                  sessionId: latestSessionId || input.subChatId,
+                  tool: value.toolName,
+                  success: true,
+                  outputPreview: JSON.stringify(value.output).slice(0, 200),
+                })
               }
 
               safeEmit(value)
@@ -1878,6 +2217,13 @@ export const codexRouter = router({
             const normalized = extractCodexError(error)
 
             console.error("[codex] chat stream error:", error)
+            modelRequest.fail(error)
+            logger.agent.error("session_crashed", {
+              sessionId: latestSessionId || input.subChatId,
+              subChatId: input.subChatId,
+              error: normalized.message,
+              exitCode: null,
+            })
             if (isCodexAuthError(normalized)) {
               safeEmit({ type: "auth-error", errorText: normalized.message })
             } else {

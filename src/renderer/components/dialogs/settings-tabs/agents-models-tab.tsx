@@ -1,30 +1,18 @@
-import { useAtom, useAtomValue, useSetAtom } from "jotai"
-import { ChevronDown, MoreHorizontal, Plus, Trash2 } from "lucide-react"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useAtom, useSetAtom } from "jotai"
+import { MoreHorizontal, Plus } from "lucide-react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 import {
   agentsLoginModalOpenAtom,
   claudeLoginModalConfigAtom,
-  codexApiKeyAtom,
-  codexLoginModalOpenAtom,
-  codexOnboardingAuthMethodAtom,
-  codexOnboardingCompletedAtom,
-  customClaudeConfigAtom,
   hiddenModelsAtom,
-  normalizeCodexApiKey,
   openaiApiKeyAtom,
-  type CustomClaudeConfig,
 } from "../../../lib/atoms"
 import { ClaudeCodeIcon, CodexIcon, SearchIcon } from "../../ui/icons"
 import { CLAUDE_MODELS, CODEX_MODELS } from "../../../features/agents/lib/models"
 import { trpc } from "../../../lib/trpc"
 import { Badge } from "../../ui/badge"
 import { Button } from "../../ui/button"
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "../../ui/collapsible"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -33,14 +21,11 @@ import {
 } from "../../ui/dropdown-menu"
 import { Input } from "../../ui/input"
 import { Label } from "../../ui/label"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../../ui/select"
 import { Switch } from "../../ui/switch"
+import { Textarea } from "../../ui/textarea"
+import {
+  ZAI_MODEL_SLOT_PRESETS,
+} from "../../../../shared/zai-model-presets"
 
 // Hook to detect narrow screen
 function useIsNarrowScreen(): boolean {
@@ -58,14 +43,6 @@ function useIsNarrowScreen(): boolean {
 
   return isNarrow
 }
-
-const EMPTY_CONFIG: CustomClaudeConfig = {
-  model: "",
-  token: "",
-  baseUrl: "",
-}
-
-const ZAI_MODELS = ["glm-5-turbo", "glm-5.1", "glm-4.7", "glm-4.5-air"]
 
 // Account row component
 function AccountRow({
@@ -270,100 +247,67 @@ function AnthropicAccountsSection() {
 }
 
 export function AgentsModelsTab() {
-  const [storedConfig, setStoredConfig] = useAtom(customClaudeConfigAtom)
-  const [model, setModel] = useState(storedConfig.model)
-  const [baseUrl, setBaseUrl] = useState(storedConfig.baseUrl)
-  const [token, setToken] = useState(storedConfig.token)
   const setClaudeLoginModalConfig = useSetAtom(claudeLoginModalConfigAtom)
   const setClaudeLoginModalOpen = useSetAtom(agentsLoginModalOpenAtom)
-  const setCodexLoginModalOpen = useSetAtom(codexLoginModalOpenAtom)
   const isNarrowScreen = useIsNarrowScreen()
   const { data: claudeCodeIntegration, isLoading: isClaudeCodeLoading } =
     trpc.claudeCode.getIntegration.useQuery()
   const isClaudeCodeConnected = claudeCodeIntegration?.isConnected
-  const { data: codexIntegration, isLoading: isCodexLoading } =
-    trpc.codex.getIntegration.useQuery()
-
-  // OpenAI API key state
-  const [storedCodexApiKey, setStoredCodexApiKey] = useAtom(codexApiKeyAtom)
-  const [codexApiKey, setCodexApiKey] = useState(storedCodexApiKey)
-  const [isSavingCodexApiKey, setIsSavingCodexApiKey] = useState(false)
-  const codexOnboardingCompleted = useAtomValue(codexOnboardingCompletedAtom)
-  const codexOnboardingAuthMethod = useAtomValue(codexOnboardingAuthMethodAtom)
   const [storedOpenAIKey, setStoredOpenAIKey] = useAtom(openaiApiKeyAtom)
   const [openaiKey, setOpenaiKey] = useState(storedOpenAIKey)
   const setOpenAIKeyMutation = trpc.voice.setOpenAIKey.useMutation()
-  const codexLogoutMutation = trpc.codex.logout.useMutation()
   const trpcUtils = trpc.useUtils()
-  const { data: zaiConfig } = trpc.zai.getConfig.useQuery()
-  const saveZaiConfigMutation = trpc.zai.saveConfig.useMutation()
-  const [zaiApiKey, setZaiApiKey] = useState("")
-  const [zaiOpusModel, setZaiOpusModel] = useState("glm-4.7")
-  const [zaiSonnetModel, setZaiSonnetModel] = useState("glm-4.7")
-  const [zaiHaikuModel, setZaiHaikuModel] = useState("glm-4.5-air")
-
-  useEffect(() => {
-    setModel(storedConfig.model)
-    setBaseUrl(storedConfig.baseUrl)
-    setToken(storedConfig.token)
-  }, [storedConfig.model, storedConfig.baseUrl, storedConfig.token])
+  const { data: providerPresets } = trpc.zai.listProviders.useQuery()
+  const { data: activeProvider } = trpc.zai.getActiveProvider.useQuery()
+  const { data: providerKeyStatus } = trpc.zai.getProviderKeyStatus.useQuery()
+  const setActiveProviderMutation = trpc.zai.setActiveProvider.useMutation()
+  const saveProviderKeyMutation = trpc.zai.saveProviderKey.useMutation()
+  const saveProviderConfigMutation = trpc.zai.saveProviderConfig.useMutation()
+  const [providerKeyDrafts, setProviderKeyDrafts] = useState<Record<string, string>>({})
+  const [providerConfigDrafts, setProviderConfigDrafts] = useState<
+    Record<
+      string,
+      {
+        baseUrl: string
+        heavy: string
+        standard: string
+        fast: string
+        headersJson: string
+      }
+    >
+  >({})
 
   useEffect(() => {
     setOpenaiKey(storedOpenAIKey)
   }, [storedOpenAIKey])
 
   useEffect(() => {
-    setCodexApiKey(storedCodexApiKey)
-  }, [storedCodexApiKey])
-
-  useEffect(() => {
-    if (!zaiConfig) return
-    setZaiOpusModel(zaiConfig.opusModel)
-    setZaiSonnetModel(zaiConfig.sonnetModel)
-    setZaiHaikuModel(zaiConfig.haikuModel)
-  }, [zaiConfig])
-
-  const savedConfigRef = useRef(storedConfig)
-
-  const handleBlurSave = useCallback(() => {
-    const trimmedModel = model.trim()
-    const trimmedBaseUrl = baseUrl.trim()
-    const trimmedToken = token.trim()
-
-    // Only save if all fields are filled
-    if (trimmedModel && trimmedBaseUrl && trimmedToken) {
-      const next: CustomClaudeConfig = {
-        model: trimmedModel,
-        token: trimmedToken,
-        baseUrl: trimmedBaseUrl,
+    if (!providerPresets) return
+    setProviderKeyDrafts((prev) => {
+      const next = { ...prev }
+      for (const provider of providerPresets) {
+        if (!(provider.id in next)) {
+          next[provider.id] = ""
+        }
       }
-      if (
-        next.model !== savedConfigRef.current.model ||
-        next.token !== savedConfigRef.current.token ||
-        next.baseUrl !== savedConfigRef.current.baseUrl
-      ) {
-        setStoredConfig(next)
-        savedConfigRef.current = next
+      return next
+    })
+    setProviderConfigDrafts((prev) => {
+      const next = { ...prev }
+      for (const provider of providerPresets) {
+        next[provider.id] = {
+          baseUrl: next[provider.id]?.baseUrl || provider.baseUrl,
+          heavy: next[provider.id]?.heavy || provider.models.heavy,
+          standard: next[provider.id]?.standard || provider.models.standard,
+          fast: next[provider.id]?.fast || provider.models.fast,
+          headersJson:
+            next[provider.id]?.headersJson ||
+            JSON.stringify(provider.defaultHeaders || {}, null, 2),
+        }
       }
-    } else if (!trimmedModel && !trimmedBaseUrl && !trimmedToken) {
-      // All cleared — reset
-      if (savedConfigRef.current.model || savedConfigRef.current.token || savedConfigRef.current.baseUrl) {
-        setStoredConfig(EMPTY_CONFIG)
-        savedConfigRef.current = EMPTY_CONFIG
-      }
-    }
-  }, [model, baseUrl, token, setStoredConfig])
-
-  const handleReset = () => {
-    setStoredConfig(EMPTY_CONFIG)
-    savedConfigRef.current = EMPTY_CONFIG
-    setModel("")
-    setBaseUrl("")
-    setToken("")
-    toast.success("Model settings reset")
-  }
-
-  const canReset = Boolean(model.trim() || baseUrl.trim() || token.trim())
+      return next
+    })
+  }, [providerPresets])
 
   const handleClaudeCodeSetup = () => {
     setClaudeLoginModalConfig({
@@ -373,36 +317,6 @@ export function AgentsModelsTab() {
     setClaudeLoginModalOpen(true)
   }
 
-  const handleCodexSetup = () => {
-    setCodexLoginModalOpen(true)
-  }
-
-  const handleCodexLogout = async () => {
-    const confirmed = window.confirm(
-      "Log out from Codex on this device?",
-    )
-    if (!confirmed) return
-
-    try {
-      await codexLogoutMutation.mutateAsync()
-      await trpcUtils.codex.getIntegration.invalidate()
-      toast.success("Codex disconnected")
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Failed to disconnect Codex"
-      toast.error(message)
-    }
-  }
-
-  const normalizedStoredCodexApiKey = normalizeCodexApiKey(storedCodexApiKey)
-  const hasAppCodexApiKey = Boolean(normalizedStoredCodexApiKey)
-  const hasLocalCodexSubscription =
-    codexOnboardingCompleted && codexOnboardingAuthMethod === "chatgpt"
-  const isCodexSubscriptionConnected =
-    codexIntegration?.state === "connected_chatgpt" ||
-    (!codexIntegration && hasLocalCodexSubscription)
-  const isCodexSubscriptionActive =
-    isCodexSubscriptionConnected && !hasAppCodexApiKey
   const [hiddenModels, setHiddenModels] = useAtom(hiddenModelsAtom)
 
   const toggleModelVisibility = useCallback((modelId: string) => {
@@ -414,66 +328,9 @@ export function AgentsModelsTab() {
     })
   }, [setHiddenModels])
 
-  const codexConnectionText = isCodexSubscriptionConnected
-    ? "Connected via ChatGPT"
-    : codexIntegration?.state === "connected_api_key"
-      ? "Not connected to subscription"
-      : codexIntegration?.state === "not_logged_in"
-        ? "Not connected"
-        : "Status unavailable"
-  const showCodexLoading =
-    isCodexLoading && !hasAppCodexApiKey && !hasLocalCodexSubscription
-
   // OpenAI key handlers
   const trimmedOpenAIKey = openaiKey.trim()
   const canResetOpenAI = !!trimmedOpenAIKey
-
-  const handleCodexApiKeyBlur = async () => {
-    const trimmedKey = codexApiKey.trim()
-
-    if (trimmedKey === storedCodexApiKey) return
-    if (!trimmedKey) return
-
-    const normalized = normalizeCodexApiKey(trimmedKey)
-    if (!normalized) {
-      toast.error("Invalid Codex API key format. Key should start with 'sk-'")
-      setCodexApiKey(storedCodexApiKey)
-      return
-    }
-
-    setIsSavingCodexApiKey(true)
-    try {
-      setStoredCodexApiKey(normalized)
-      setCodexApiKey(normalized)
-      await trpcUtils.codex.getIntegration.invalidate()
-      toast.success("Codex API key saved")
-    } catch {
-      toast.error("Failed to save Codex API key")
-    } finally {
-      setIsSavingCodexApiKey(false)
-    }
-  }
-
-  const handleRemoveCodexApiKey = async () => {
-    setIsSavingCodexApiKey(true)
-    try {
-      setStoredCodexApiKey("")
-      setCodexApiKey("")
-
-      if (codexIntegration?.state === "connected_api_key") {
-        await codexLogoutMutation.mutateAsync().catch(() => {
-          toast.error("Codex API key removed, but failed to log out Codex CLI")
-        })
-      }
-
-      await trpcUtils.codex.getIntegration.invalidate()
-      toast.success("Codex API key removed")
-    } catch {
-      toast.error("Failed to remove Codex API key")
-    } finally {
-      setIsSavingCodexApiKey(false)
-    }
-  }
 
   const handleSaveOpenAI = async () => {
     if (trimmedOpenAIKey === storedOpenAIKey) return // No change
@@ -524,31 +381,115 @@ export function AgentsModelsTab() {
     return allModels.filter((m) => m.name.toLowerCase().includes(q))
   }, [allModels, modelSearch])
 
-  const [isApiKeysOpen, setIsApiKeysOpen] = useState(false)
+  const handleSwitchProvider = async (presetId: string) => {
+    try {
+      await setActiveProviderMutation.mutateAsync({ presetId })
+      await Promise.all([
+        trpcUtils.zai.getActiveProvider.invalidate(),
+        trpcUtils.zai.getProviderKeyStatus.invalidate(),
+        trpcUtils.codex.getIntegration.invalidate(),
+      ])
+      toast.success("Active provider updated")
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to switch provider"
+      toast.error(message)
+    }
+  }
 
-  const handleSaveZaiConfig = async () => {
-    const trimmedKey = zaiApiKey.trim()
-    if (!trimmedKey && !zaiConfig?.hasKey) {
-      toast.error("Enter a ZAI API key before saving")
+  const handleSaveProviderKey = async (presetId: string) => {
+    const value = providerKeyDrafts[presetId]?.trim() || ""
+    if (!value) {
+      toast.error("Enter an API key before saving")
       return
     }
 
     try {
-      await saveZaiConfigMutation.mutateAsync({
-        apiKey: trimmedKey || undefined,
-        baseUrl: zaiConfig?.baseUrl || "https://api.z.ai/api/anthropic",
-        opusModel: zaiOpusModel,
-        sonnetModel: zaiSonnetModel,
-        haikuModel: zaiHaikuModel,
-      })
-      setZaiApiKey("")
-      await trpcUtils.zai.getConfig.invalidate()
-      await trpcUtils.zai.getApiKey.invalidate()
-      await trpcUtils.zai.isConfigured.invalidate()
-      toast.success("ZAI config updated")
+      await saveProviderKeyMutation.mutateAsync({ presetId, apiKey: value })
+      setProviderKeyDrafts((prev) => ({ ...prev, [presetId]: "" }))
+      await Promise.all([
+        trpcUtils.zai.getProviderKeyStatus.invalidate(),
+        trpcUtils.zai.getApiKey.invalidate(),
+        trpcUtils.zai.isConfigured.invalidate(),
+        trpcUtils.codex.getIntegration.invalidate(),
+      ])
+      toast.success("Provider API key saved")
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : "Failed to save ZAI config"
+        err instanceof Error ? err.message : "Failed to save provider API key"
+      toast.error(message)
+    }
+  }
+
+  const handleUpdateProviderDraft = useCallback((
+    presetId: string,
+    patch: Partial<{
+      baseUrl: string
+      heavy: string
+      standard: string
+      fast: string
+      headersJson: string
+    }>,
+  ) => {
+    setProviderConfigDrafts((prev) => ({
+      ...prev,
+      [presetId]: {
+        ...prev[presetId],
+        ...patch,
+      },
+    }))
+  }, [])
+
+  const handleApplyZaiPreset = (presetId: string) => {
+    const preset = ZAI_MODEL_SLOT_PRESETS.find((item) => item.id === presetId)
+    if (!preset || !activeProvider) return
+
+    handleUpdateProviderDraft(activeProvider.id, {
+      heavy: preset.models.opus,
+      standard: preset.models.sonnet,
+      fast: preset.models.haiku,
+    })
+  }
+
+  const handleSaveProviderConfig = async (presetId: string) => {
+    const draft = providerConfigDrafts[presetId]
+    if (!draft) return
+
+    let parsedHeaders: Record<string, string> = {}
+    try {
+      const parsed = JSON.parse(draft.headersJson || "{}")
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Headers must be a JSON object")
+      }
+
+      parsedHeaders = Object.fromEntries(
+        Object.entries(parsed).map(([key, value]) => [key, String(value)]),
+      )
+    } catch (error) {
+      toast.error("Invalid headers JSON")
+      return
+    }
+
+    try {
+      await saveProviderConfigMutation.mutateAsync({
+        presetId,
+        baseUrl: draft.baseUrl.trim(),
+        headers: parsedHeaders,
+        models: {
+          heavy: draft.heavy.trim(),
+          standard: draft.standard.trim(),
+          fast: draft.fast.trim(),
+        },
+      })
+      await Promise.all([
+        trpcUtils.zai.listProviders.invalidate(),
+        trpcUtils.zai.getActiveProvider.invalidate(),
+        trpcUtils.codex.getIntegration.invalidate(),
+      ])
+      toast.success("Provider config saved")
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to save provider config"
       toast.error(message)
     }
   }
@@ -564,96 +505,183 @@ export function AgentsModelsTab() {
 
       <div className="space-y-2">
         <div className="pb-2">
-          <h4 className="text-sm font-medium text-foreground">ZAI Config</h4>
+          <h4 className="text-sm font-medium text-foreground">Providers</h4>
           <p className="text-xs text-muted-foreground">
-            Manage the local ZAI key and GLM model mapping used by Claude Code.
+            Choose the active provider, then edit its API key, base URL, model mapping, and headers in one place.
           </p>
         </div>
 
-        <div className="bg-background rounded-lg border border-border p-4 space-y-4">
-          <div className="space-y-2">
-            <Label className="text-sm font-medium">Current key</Label>
-            <p className="text-xs text-muted-foreground">
-              {zaiConfig?.maskedKey || "Not configured"}
-            </p>
+        <div className="bg-background rounded-lg border border-border p-4 space-y-5">
+          <div className="flex flex-wrap gap-2">
+            {providerPresets?.map((provider) => (
+              <button
+                key={provider.id}
+                type="button"
+                onClick={() => void handleSwitchProvider(provider.id)}
+                className="rounded-md px-4 py-1.5 text-sm transition-colors"
+                style={{
+                  border:
+                    activeProvider?.id === provider.id
+                      ? "1px solid #cc2200"
+                      : "1px solid #333",
+                  color: activeProvider?.id === provider.id ? "#cc2200" : "#888",
+                  background: "transparent",
+                  cursor: "pointer",
+                }}
+                disabled={setActiveProviderMutation.isPending}
+              >
+                {provider.name}
+              </button>
+            ))}
           </div>
 
-          <div className="space-y-2">
-            <Label className="text-sm font-medium">Replace API key</Label>
-            <Input
-              type="password"
-              value={zaiApiKey}
-              onChange={(e) => setZaiApiKey(e.target.value)}
-              placeholder="Enter a new ZAI API key"
-            />
-          </div>
+          <p className="text-xs text-muted-foreground">
+            Active: {activeProvider?.name || "Unknown"} · {activeProvider?.type || "unknown"}
+          </p>
 
-          <div className="space-y-2">
-            <Label className="text-sm font-medium">Base URL</Label>
-            <Input
-              value={zaiConfig?.baseUrl || "https://api.z.ai/api/anthropic"}
-              disabled
-            />
-          </div>
+          {activeProvider && providerConfigDrafts[activeProvider.id] && (
+            <div className="space-y-4 border-t border-border pt-4">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <Label className="text-sm font-medium">
+                      {activeProvider.apiKeyLabel}
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      {providerKeyStatus?.find((item) => item.presetId === activeProvider.id)?.hasKey
+                        ? "Saved"
+                        : "Not configured"}
+                    </p>
+                  </div>
+                  <Badge variant="secondary" className="text-xs">
+                    {activeProvider.type}
+                  </Badge>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="password"
+                    value={providerKeyDrafts[activeProvider.id] || ""}
+                    onChange={(e) =>
+                      setProviderKeyDrafts((prev) => ({
+                        ...prev,
+                        [activeProvider.id]: e.target.value,
+                      }))
+                    }
+                    placeholder={activeProvider.apiKeyPlaceholder}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void handleSaveProviderKey(activeProvider.id)}
+                    disabled={saveProviderKeyMutation.isPending}
+                  >
+                    Save key
+                  </Button>
+                </div>
+              </div>
 
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-            <div className="space-y-2">
-              <Label className="text-sm font-medium">Heavy tasks</Label>
-              <Select value={zaiOpusModel} onValueChange={setZaiOpusModel}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {ZAI_MODELS.map((model) => (
-                    <SelectItem key={model} value={model}>
-                      {model}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">Base URL</Label>
+                <Input
+                  value={providerConfigDrafts[activeProvider.id].baseUrl}
+                  onChange={(e) =>
+                    handleUpdateProviderDraft(activeProvider.id, {
+                      baseUrl: e.target.value,
+                    })
+                  }
+                  placeholder={activeProvider.baseUrl}
+                />
+              </div>
+
+              {activeProvider.id === "zai" && (
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium">Quick presets</Label>
+                  <div className="flex gap-2">
+                    {ZAI_MODEL_SLOT_PRESETS.map((preset) => (
+                      <Button
+                        key={preset.id}
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleApplyZaiPreset(preset.id)}
+                      >
+                        {preset.label}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium">Heavy</Label>
+                  <Input
+                    value={providerConfigDrafts[activeProvider.id].heavy}
+                    onChange={(e) =>
+                      handleUpdateProviderDraft(activeProvider.id, {
+                        heavy: e.target.value,
+                      })
+                    }
+                    placeholder={activeProvider.models.heavy}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium">Standard</Label>
+                  <Input
+                    value={providerConfigDrafts[activeProvider.id].standard}
+                    onChange={(e) =>
+                      handleUpdateProviderDraft(activeProvider.id, {
+                        standard: e.target.value,
+                      })
+                    }
+                    placeholder={activeProvider.models.standard}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium">Fast</Label>
+                  <Input
+                    value={providerConfigDrafts[activeProvider.id].fast}
+                    onChange={(e) =>
+                      handleUpdateProviderDraft(activeProvider.id, {
+                        fast: e.target.value,
+                      })
+                    }
+                    placeholder={activeProvider.models.fast}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">Headers</Label>
+                <Textarea
+                  rows={6}
+                  value={providerConfigDrafts[activeProvider.id].headersJson}
+                  onChange={(e) =>
+                    handleUpdateProviderDraft(activeProvider.id, {
+                      headersJson: e.target.value,
+                    })
+                  }
+                  placeholder='{"Host":"9router.colenboro.xyz","User-Agent":"curl/7.88.1"}'
+                  className="font-mono text-xs"
+                />
+                <p className="text-xs text-muted-foreground">
+                  9router should include `Host: 9router.colenboro.xyz` and `User-Agent: curl/7.88.1`.
+                </p>
+              </div>
+
+              <div className="flex justify-end">
+                <Button
+                  type="button"
+                  onClick={() => void handleSaveProviderConfig(activeProvider.id)}
+                  disabled={saveProviderConfigMutation.isPending}
+                >
+                  {saveProviderConfigMutation.isPending ? "Saving..." : "Save Provider Config"}
+                </Button>
+              </div>
             </div>
-
-            <div className="space-y-2">
-              <Label className="text-sm font-medium">Standard tasks</Label>
-              <Select value={zaiSonnetModel} onValueChange={setZaiSonnetModel}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {ZAI_MODELS.map((model) => (
-                    <SelectItem key={model} value={model}>
-                      {model}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label className="text-sm font-medium">Fast tasks</Label>
-              <Select value={zaiHaikuModel} onValueChange={setZaiHaikuModel}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {ZAI_MODELS.map((model) => (
-                    <SelectItem key={model} value={model}>
-                      {model}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          <div className="flex justify-end">
-            <Button
-              onClick={() => void handleSaveZaiConfig()}
-              disabled={saveZaiConfigMutation.isPending}
-            >
-              {saveZaiConfigMutation.isPending ? "Saving..." : "Save ZAI Config"}
-            </Button>
-          </div>
+          )}
         </div>
       </div>
 
@@ -733,222 +761,47 @@ export function AgentsModelsTab() {
       </div>
 
       <div className="space-y-2">
-        <div className="pb-2 flex items-center justify-between">
-          <div>
-            <h4 className="text-sm font-medium text-foreground">
-              Codex Account
-            </h4>
-            <p className="text-xs text-muted-foreground">
-              Manage your Codex account
-            </p>
-          </div>
+        <div className="pb-2">
+          <h4 className="text-sm font-medium text-foreground">Voice</h4>
+          <p className="text-xs text-muted-foreground">
+            Configure the separate OpenAI key used for Whisper transcription.
+          </p>
         </div>
 
-        <div className="bg-background rounded-lg border border-border overflow-hidden divide-y divide-border">
-          {showCodexLoading ? (
-            <div className="p-4 text-center text-sm text-muted-foreground">
-              Loading account...
-            </div>
-          ) : (
-            <>
-              <div className="flex items-center justify-between gap-6 p-4 hover:bg-muted/50">
-                <div>
-                  <div className="text-sm font-medium">Codex Subscription</div>
-                  <div className="text-xs text-muted-foreground">
-                    {codexConnectionText}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  {isCodexSubscriptionActive && (
-                    <Badge variant="secondary" className="text-xs">
-                      Active
-                    </Badge>
-                  )}
-                  {isCodexSubscriptionConnected ? (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => void handleCodexLogout()}
-                      disabled={codexLogoutMutation.isPending}
-                    >
-                      {codexLogoutMutation.isPending ? "..." : "Logout"}
-                    </Button>
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => void handleCodexSetup()}
-                      disabled={
-                        isCodexLoading ||
-                        codexLogoutMutation.isPending ||
-                        isSavingCodexApiKey
-                      }
-                    >
-                      Connect
-                    </Button>
-                  )}
-                </div>
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* ===== API Keys Section (Collapsible) ===== */}
-      <Collapsible open={isApiKeysOpen} onOpenChange={setIsApiKeysOpen}>
-        <CollapsibleTrigger className="flex items-center gap-1.5 text-sm font-medium text-foreground hover:text-foreground/80 transition-colors">
-          <ChevronDown className={`h-4 w-4 transition-transform ${isApiKeysOpen ? "" : "-rotate-90"}`} />
-          API Keys
-        </CollapsibleTrigger>
-        <CollapsibleContent className="space-y-4 pt-3">
-          {/* Codex API Key */}
-          <div className="bg-background rounded-lg border border-border overflow-hidden">
-            <div className="flex items-center justify-between gap-6 p-4">
-              <div className="flex-1">
-                <div className="flex items-center gap-2">
-                  <Label className="text-sm font-medium">Codex API Key</Label>
-                  {hasAppCodexApiKey && (
-                    <Badge variant="secondary" className="text-xs">
-                      Active
-                    </Badge>
-                  )}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Takes priority over subscription
-                </p>
-              </div>
-              <div className="flex-shrink-0 w-80 flex items-center gap-2">
-                <Input
-                  type="password"
-                  value={codexApiKey}
-                  onChange={(e) => setCodexApiKey(e.target.value)}
-                  onBlur={handleCodexApiKeyBlur}
-                  className="w-full font-mono"
-                  placeholder="sk-..."
-                />
-                {hasAppCodexApiKey && (
+        <div className="bg-background rounded-lg border border-border overflow-hidden">
+          <div className="flex items-center justify-between gap-6 p-4">
+            <div className="flex-1">
+              <div className="flex items-center gap-2">
+                <Label className="text-sm font-medium">OpenAI API Key</Label>
+                {canResetOpenAI && (
                   <Button
-                    size="icon"
                     variant="ghost"
-                    onClick={() => void handleRemoveCodexApiKey()}
-                    disabled={isSavingCodexApiKey}
-                    aria-label="Remove Codex API key"
-                    className="text-muted-foreground hover:text-red-600 hover:bg-red-500/10"
+                    size="sm"
+                    onClick={handleResetOpenAI}
+                    disabled={setOpenAIKeyMutation.isPending}
+                    className="h-5 px-1.5 text-xs text-muted-foreground hover:text-red-600 hover:bg-red-500/10"
                   >
-                    <Trash2 className="h-4 w-4" />
+                    Remove
                   </Button>
                 )}
               </div>
+              <p className="text-xs text-muted-foreground">
+                Required for voice transcription (Whisper API)
+              </p>
+            </div>
+            <div className="flex-shrink-0 w-80">
+              <Input
+                type="password"
+                value={openaiKey}
+                onChange={(e) => setOpenaiKey(e.target.value)}
+                onBlur={handleSaveOpenAI}
+                className="w-full"
+                placeholder="sk-..."
+              />
             </div>
           </div>
-
-          {/* OpenAI API Key for Voice Input */}
-          <div className="bg-background rounded-lg border border-border overflow-hidden">
-            <div className="flex items-center justify-between gap-6 p-4">
-              <div className="flex-1">
-                <div className="flex items-center gap-2">
-                  <Label className="text-sm font-medium">OpenAI API Key</Label>
-                  {canResetOpenAI && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={handleResetOpenAI}
-                      disabled={setOpenAIKeyMutation.isPending}
-                      className="h-5 px-1.5 text-xs text-muted-foreground hover:text-red-600 hover:bg-red-500/10"
-                    >
-                      Remove
-                    </Button>
-                  )}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Required for voice transcription (Whisper API)
-                </p>
-              </div>
-              <div className="flex-shrink-0 w-80">
-                <Input
-                  type="password"
-                  value={openaiKey}
-                  onChange={(e) => setOpenaiKey(e.target.value)}
-                  onBlur={handleSaveOpenAI}
-                  className="w-full"
-                  placeholder="sk-..."
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* Override Model */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <h4 className="text-sm font-medium text-foreground">
-                Override Model
-              </h4>
-              {canReset && (
-                <Button variant="ghost" size="sm" onClick={handleReset} className="text-muted-foreground hover:text-red-600 hover:bg-red-500/10">
-                  Reset
-                </Button>
-              )}
-            </div>
-            <div className="bg-background rounded-lg border border-border overflow-hidden">
-              <div className="flex items-center justify-between p-4">
-                <div className="flex-1">
-                  <Label className="text-sm font-medium">Model name</Label>
-                  <p className="text-xs text-muted-foreground">
-                    Model identifier to use for requests
-                  </p>
-                </div>
-                <div className="flex-shrink-0 w-80">
-                  <Input
-                    value={model}
-                    onChange={(e) => setModel(e.target.value)}
-                    onBlur={handleBlurSave}
-                    className="w-full"
-                    placeholder="claude-3-7-sonnet-20250219"
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between p-4 border-t border-border">
-                <div className="flex-1">
-                  <Label className="text-sm font-medium">API token</Label>
-                  <p className="text-xs text-muted-foreground">
-                    ANTHROPIC_AUTH_TOKEN env
-                  </p>
-                </div>
-                <div className="flex-shrink-0 w-80">
-                  <Input
-                    type="password"
-                    value={token}
-                    onChange={(e) => setToken(e.target.value)}
-                    onBlur={handleBlurSave}
-                    className="w-full"
-                    placeholder="sk-ant-..."
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between p-4 border-t border-border">
-                <div className="flex-1">
-                  <Label className="text-sm font-medium">Base URL</Label>
-                  <p className="text-xs text-muted-foreground">
-                    ANTHROPIC_BASE_URL env
-                  </p>
-                </div>
-                <div className="flex-shrink-0 w-80">
-                  <Input
-                    value={baseUrl}
-                    onChange={(e) => setBaseUrl(e.target.value)}
-                    onBlur={handleBlurSave}
-                    className="w-full"
-                    placeholder="https://api.anthropic.com"
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
+        </div>
+      </div>
     </div>
   )
 }

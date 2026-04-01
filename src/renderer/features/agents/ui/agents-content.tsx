@@ -5,8 +5,13 @@ import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import { useQuery } from "@tanstack/react-query"
 // import { useSearchParams, useRouter } from "next/navigation" // Desktop doesn't use next/navigation
 // Desktop: mock Next.js navigation hooks
-const useSearchParams = () => ({ get: () => null })
-const useRouter = () => ({ push: () => {}, replace: () => {} })
+const STABLE_SEARCH_PARAMS = { get: () => null as string | null }
+const STABLE_ROUTER = {
+  push: () => {},
+  replace: () => {},
+}
+const useSearchParams = () => STABLE_SEARCH_PARAMS
+const useRouter = () => STABLE_ROUTER
 // Desktop: mock Clerk hooks
 const useUser = () => ({ user: null })
 const useClerk = () => ({ signOut: () => {} })
@@ -46,7 +51,6 @@ import { api } from "../../../lib/mock-api"
 import { trpc } from "../../../lib/trpc"
 import { useIsMobile } from "../../../lib/hooks/use-mobile"
 import { AgentsSidebar } from "../../sidebar/agents-sidebar"
-import { AgentsSubChatsSidebar } from "../../sidebar/agents-subchats-sidebar"
 import { AgentPreview } from "./agent-preview"
 import { AgentDiffView } from "./agent-diff-view"
 import { TerminalSidebar, terminalSidebarOpenAtomFamily } from "../../terminal"
@@ -58,7 +62,6 @@ import {
 import { useShallow } from "zustand/react/shallow"
 import { motion, AnimatePresence } from "motion/react"
 // import { ResizableSidebar } from "@/app/(alpha)/canvas/[id]/{components}/resizable-sidebar"
-import { ResizableSidebar } from "../../../components/ui/resizable-sidebar"
 // import { useClerk, useUser } from "@clerk/nextjs"
 // import { useCombinedAuth } from "@/lib/hooks/use-combined-auth"
 const useCombinedAuth = () => ({ userId: null }) // Desktop mock
@@ -74,6 +77,7 @@ const useIsAdmin = () => false
 
 // Main Component
 export function AgentsContent() {
+  const isDesktop = isDesktopApp()
   const [selectedChatId, setSelectedChatId] = useAtom(selectedAgentChatIdAtom)
   const desktopView = useAtomValue(desktopViewAtom)
   const setSelectedChatIsRemote = useSetAtom(selectedChatIsRemoteAtom)
@@ -105,10 +109,6 @@ export function AgentsContent() {
   )
   const setTerminalSidebarOpen = useSetAtom(terminalSidebarAtom)
 
-  const hasOpenedSubChatsSidebar = useRef(false)
-  const wasSubChatsSidebarOpen = useRef(false)
-  const [shouldAnimateSubChatsSidebar, setShouldAnimateSubChatsSidebar] =
-    useState(subChatsSidebarMode !== "sidebar")
   const searchParams = useSearchParams()
   const router = useRouter()
   const isInitialized = useRef(false)
@@ -181,7 +181,7 @@ export function AgentsContent() {
 
   // Fetch teams for header
   const { data: teams } = api.teams.getUserTeams.useQuery(undefined, {
-    enabled: !!selectedTeamId,
+    enabled: !!selectedTeamId && !isDesktop,
   })
   const selectedTeam = teams?.find((t: any) => t.id === selectedTeamId) as any
 
@@ -190,7 +190,7 @@ export function AgentsContent() {
   const { data: automationsData } = useQuery({
     queryKey: ["automations", "autoActivateCheck", selectedTeamId],
     queryFn: () => remoteTrpc.automations.listAutomations.query({ teamId: selectedTeamId! }),
-    enabled: !!selectedTeamId && !betaAutomationsEnabled,
+    enabled: !!selectedTeamId && !betaAutomationsEnabled && !isDesktop,
     staleTime: Infinity,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -206,7 +206,7 @@ export function AgentsContent() {
   // Fetch agent chats for keyboard navigation and mobile view
   const { data: agentChats } = api.agents.getAgentChats.useQuery(
     { teamId: selectedTeamId! },
-    { enabled: !!selectedTeamId },
+    { enabled: !!selectedTeamId && !isDesktop },
   )
 
   // Fetch all projects for git info (like sidebar does)
@@ -223,6 +223,7 @@ export function AgentsContent() {
     { chatId: selectedChatId! },
     { enabled: !!selectedChatId },
   )
+  const chatIdFromUrl = searchParams.get("chat")
 
   // Track previous chat ID for navigation after archive
   const [previousChatId, setPreviousChatId] = useAtom(previousAgentChatIdAtom)
@@ -249,11 +250,10 @@ export function AgentsContent() {
     if (isInitialized.current) return
     isInitialized.current = true
 
-    const chatIdFromUrl = searchParams.get("chat")
     if (chatIdFromUrl) {
       setSelectedChatId(chatIdFromUrl)
     }
-  }, [searchParams, setSelectedChatId])
+  }, [chatIdFromUrl, setSelectedChatId])
 
   // When atom changes: update URL and increment NewChatForm key when returning to new chat view
   useEffect(() => {
@@ -265,7 +265,7 @@ export function AgentsContent() {
       return
     }
 
-    const currentChatId = searchParams.get("chat")
+    const currentChatId = chatIdFromUrl
     if (selectedChatId !== currentChatId) {
       const url = new URL(window.location.href)
       if (selectedChatId) {
@@ -277,7 +277,7 @@ export function AgentsContent() {
       }
       router.replace(url.pathname + url.search, { scroll: false })
     }
-  }, [selectedChatId, searchParams, router, quickSwitchOpen])
+  }, [selectedChatId, chatIdFromUrl])
 
   // Auto-close sidebars on mobile devices
   useEffect(() => {
@@ -286,6 +286,12 @@ export function AgentsContent() {
       setPreviewSidebarOpen(false)
     }
   }, [isMobile, isHydrated, setSidebarOpen, setPreviewSidebarOpen])
+
+  useEffect(() => {
+    if (!isMobile && subChatsSidebarMode === "sidebar") {
+      setSubChatsSidebarMode("tabs")
+    }
+  }, [isMobile, subChatsSidebarMode, setSubChatsSidebarMode])
 
   // On mobile: when chat is selected, switch to chat mode
   useEffect(() => {
@@ -793,34 +799,6 @@ export function AgentsContent() {
     selectedChatId !== null &&
     (subChatsStoreChatId !== selectedChatId || subChatsCount === 0)
 
-  // Track sub-chats sidebar open state for animation control
-  // Now renders even while loading to show spinner (mobile always uses tabs)
-  const isSubChatsSidebarOpen =
-    selectedChatId &&
-    subChatsSidebarMode === "sidebar" &&
-    !isMobile &&
-    !desktopView
-
-  useEffect(() => {
-    // When sidebar closes, reset for animation on next open
-    if (!isSubChatsSidebarOpen && wasSubChatsSidebarOpen.current) {
-      hasOpenedSubChatsSidebar.current = false
-      setShouldAnimateSubChatsSidebar(true)
-    }
-    wasSubChatsSidebarOpen.current = !!isSubChatsSidebarOpen
-
-    // Mark as opened after animation completes
-    if (isSubChatsSidebarOpen && !hasOpenedSubChatsSidebar.current) {
-      const timer = setTimeout(() => {
-        hasOpenedSubChatsSidebar.current = true
-        setShouldAnimateSubChatsSidebar(false)
-      }, 150 + 50) // 150ms duration + 50ms buffer
-      return () => clearTimeout(timer)
-    } else if (isSubChatsSidebarOpen && hasOpenedSubChatsSidebar.current) {
-      setShouldAnimateSubChatsSidebar(false)
-    }
-  }, [isSubChatsSidebarOpen])
-
   // Check if chat has sandbox with port for preview
   const chatMeta = chatData?.meta as
     | {
@@ -863,11 +841,11 @@ export function AgentsContent() {
         {/* Mobile: Settings/Automations/Inbox fullscreen views */}
         {desktopView === "settings" ? (
           <SettingsContent />
-        ) : betaAutomationsEnabled && desktopView === "automations" ? (
+        ) : betaAutomationsEnabled && !isDesktop && desktopView === "automations" ? (
           <AutomationsView />
-        ) : betaAutomationsEnabled && desktopView === "automations-detail" ? (
+        ) : betaAutomationsEnabled && !isDesktop && desktopView === "automations-detail" ? (
           <AutomationsDetailView />
-        ) : betaAutomationsEnabled && desktopView === "inbox" ? (
+        ) : betaAutomationsEnabled && !isDesktop && desktopView === "inbox" ? (
           <InboxView />
         ) : mobileViewMode === "chats" ? (
           // Chats List Mode (default) - uses AgentsSidebar in fullscreen
@@ -965,48 +943,22 @@ export function AgentsContent() {
   // Desktop layout
   return (
     <>
-      <div className="flex h-full">
-        {/* Sub-chats sidebar - only show in sidebar mode when viewing a chat */}
-        <ResizableSidebar
-          isOpen={!!isSubChatsSidebarOpen}
-          onClose={() => {
-            setShouldAnimateSubChatsSidebar(true)
-            setSubChatsSidebarMode("tabs")
-          }}
-          widthAtom={agentsSubChatsSidebarWidthAtom}
-          minWidth={160}
-          maxWidth={300}
-          side="left"
-          animationDuration={0}
-          initialWidth={0}
-          exitWidth={0}
-          disableClickToClose={true}
-        >
-          <AgentsSubChatsSidebar
-            onClose={() => {
-              setShouldAnimateSubChatsSidebar(true)
-              setSubChatsSidebarMode("tabs")
-            }}
-            isMobile={isMobile}
-            isSidebarOpen={sidebarOpen}
-            onBackToChats={() => setSidebarOpen((prev) => !prev)}
-            isLoading={isLoadingSubChats}
-            agentName={chatData?.name}
-          />
-        </ResizableSidebar>
-
-        {/* Main content */}
+      <div
+        className="flex h-full"
+        data-subchat-loading={isLoadingSubChats || undefined}
+        data-selected-chat={selectedChatId || undefined}
+      >
         <div
           className="flex-1 min-w-0 overflow-hidden"
           style={{ minWidth: "350px" }}
         >
           {desktopView === "settings" ? (
             <SettingsContent />
-          ) : betaAutomationsEnabled && desktopView === "automations" ? (
+          ) : betaAutomationsEnabled && !isDesktop && desktopView === "automations" ? (
             <AutomationsView />
-          ) : betaAutomationsEnabled && desktopView === "automations-detail" ? (
+          ) : betaAutomationsEnabled && !isDesktop && desktopView === "automations-detail" ? (
             <AutomationsDetailView />
-          ) : betaAutomationsEnabled && desktopView === "inbox" ? (
+          ) : betaAutomationsEnabled && !isDesktop && desktopView === "inbox" ? (
             <InboxView />
           ) : selectedChatId ? (
             <div className="h-full flex flex-col relative overflow-hidden">

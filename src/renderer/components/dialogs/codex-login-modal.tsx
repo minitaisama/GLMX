@@ -5,9 +5,9 @@ import { X } from "lucide-react"
 import { useEffect, useRef } from "react"
 import { pendingAuthRetryMessageAtom } from "../../features/agents/atoms"
 import {
-  CodexLoginContent,
-} from "../../features/agents/components/codex-login-content"
-import { useCodexLoginFlow } from "../../features/agents/hooks/use-codex-login-flow"
+  OpenAIProviderLoginContent,
+} from "../../features/agents/components/openai-provider-login-content"
+import { useOpenAIProviderLoginFlow } from "../../features/agents/hooks/use-openai-provider-login-flow"
 import {
   agentsSettingsDialogActiveTabAtom,
   agentsSettingsDialogOpenAtom,
@@ -55,7 +55,7 @@ export function CodexLoginModal({ autoStart = true }: CodexLoginModalProps) {
     cancel,
     reset,
     openUrl,
-  } = useCodexLoginFlow()
+  } = useOpenAIProviderLoginFlow()
 
   const clearPendingRetryIfNeeded = () => {
     if (
@@ -168,7 +168,7 @@ export function CodexLoginModal({ autoStart = true }: CodexLoginModalProps) {
           <span className="sr-only">Close</span>
         </AlertDialogCancel>
 
-        <CodexLoginContent
+        <OpenAIProviderLoginContent
           state={state}
           method={method}
           apiKey={apiKeyInput}
@@ -207,7 +207,7 @@ export function CodexLoginModal({ autoStart = true }: CodexLoginModalProps) {
               onClick={handleOpenModelsSettings}
               className="text-xs text-muted-foreground underline underline-offset-4 transition-colors hover:text-foreground"
             >
-              Connect with API key in Settings
+              Open Provider Settings
             </button>
           </div>
         )}

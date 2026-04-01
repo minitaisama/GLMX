@@ -22,9 +22,14 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "../../../components/ui/popover"
+import { trpc } from "../../../lib/trpc"
 import { cn } from "../../../lib/utils"
 import type { CodexThinkingLevel } from "../lib/models"
-import { formatCodexThinkingLabel } from "../lib/models"
+import {
+  formatCodexThinkingLabel,
+  getClaudeSlotModelName,
+  getOpenAICompatibleSlotModelName,
+} from "../lib/models"
 
 const CROSS_PROVIDER_DIALOG_DISMISSED_KEY = "agent-model-selector:skip-cross-provider-dialog"
 
@@ -74,6 +79,7 @@ interface AgentModelSelectorProps {
     onThinkingChange: (enabled: boolean) => void
   }
   codex: {
+    isEnabled: boolean
     models: CodexModelOption[]
     selectedModelId: string
     onSelectModel: (modelId: string) => void
@@ -102,14 +108,16 @@ function CodexThinkingSubMenu({
   const subMenuRef = useRef<HTMLDivElement>(null)
   const [showSub, setShowSub] = useState(false)
   const [subPos, setSubPos] = useState({ top: 0, left: 0 })
-  const closeTimeout = useRef<ReturnType<typeof setTimeout>>()
+  const closeTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const scheduleClose = useCallback(() => {
     closeTimeout.current = setTimeout(() => setShowSub(false), 150)
   }, [])
 
   const cancelClose = useCallback(() => {
-    clearTimeout(closeTimeout.current)
+    if (closeTimeout.current) {
+      clearTimeout(closeTimeout.current)
+    }
   }, [])
 
   const handleTriggerEnter = useCallback(() => {
@@ -146,7 +154,11 @@ function CodexThinkingSubMenu({
   )
 
   useEffect(() => {
-    return () => clearTimeout(closeTimeout.current)
+    return () => {
+      if (closeTimeout.current) {
+        clearTimeout(closeTimeout.current)
+      }
+    }
   }, [])
 
   return (
@@ -327,6 +339,12 @@ export function AgentModelSelector({
   const [search, setSearch] = useState("")
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false)
   const [pendingProvider, setPendingProvider] = useState<AgentProviderId | null>(null)
+  const { data: zaiConfig } = trpc.zai.getConfig.useQuery(undefined, {
+    staleTime: 60_000,
+  })
+  const { data: activeProvider } = trpc.zai.getActiveProvider.useQuery(undefined, {
+    staleTime: 60_000,
+  })
 
   const canSelectProvider = (provider: AgentProviderId) =>
     allowProviderSwitch || selectedAgentId === provider
@@ -351,12 +369,15 @@ export function AgentModelSelector({
       }
     }
 
-    for (const m of codex.models) {
-      items.push({ type: "codex", model: m })
+    const includeCodexModels = codex.isEnabled
+    if (includeCodexModels) {
+      for (const m of codex.models) {
+        items.push({ type: "codex", model: m })
+      }
     }
 
     return items
-  }, [claude, codex])
+  }, [claude, codex, selectedAgentId])
 
   // Filter by search
   const filteredModels = useMemo(() => {
@@ -364,21 +385,26 @@ export function AgentModelSelector({
     const q = search.toLowerCase().trim()
     return allModels.filter((item) => {
       switch (item.type) {
-        case "claude":
+      case "claude":
+        return (
+          item.model.name.toLowerCase().includes(q) ||
+            item.model.version.toLowerCase().includes(q) ||
+            `${item.model.name} ${item.model.version} ${getClaudeSlotModelName(item.model.id, zaiConfig)}`.toLowerCase().includes(q)
+        )
+      case "codex":
           return (
             item.model.name.toLowerCase().includes(q) ||
-            item.model.version.toLowerCase().includes(q) ||
-            `${item.model.name} ${item.model.version}`.toLowerCase().includes(q)
+            getOpenAICompatibleSlotModelName(item.model.id, activeProvider?.models)
+              .toLowerCase()
+              .includes(q)
           )
-        case "codex":
-          return item.model.name.toLowerCase().includes(q)
         case "ollama":
           return item.modelName.toLowerCase().includes(q)
         case "custom":
           return "custom model".includes(q)
       }
     })
-  }, [allModels, search])
+  }, [activeProvider?.models, allModels, search])
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
@@ -511,12 +537,22 @@ export function AgentModelSelector({
       case "claude":
         return `${item.model.name} ${item.model.version}`
       case "codex":
-        return item.model.name
+        return `${item.model.name} slot`
       case "ollama":
         return item.modelName + (item.isRecommended ? " (recommended)" : "")
       case "custom":
         return "Custom Model"
     }
+  }
+
+  const getClaudeSlotSubtitle = (item: FlatModelItem): string | null => {
+    if (item.type !== "claude") return null
+    return getClaudeSlotModelName(item.model.id, zaiConfig)
+  }
+
+  const getOpenAICompatibleSlotSubtitle = (item: FlatModelItem): string | null => {
+    if (item.type !== "codex") return null
+    return getOpenAICompatibleSlotModelName(item.model.id, activeProvider?.models)
   }
 
   const getItemKey = (item: FlatModelItem): string => {
@@ -581,7 +617,7 @@ export function AgentModelSelector({
             </>
           )}
 
-          {/* Codex thinking level selector with hover sub-menu */}
+          {/* OpenAI-compatible thinking level selector with hover sub-menu */}
           {selectedAgentId === "codex" && (() => {
             const selectedCodexModel = codex.models.find((m) => m.id === codex.selectedModelId) || codex.models[0]
             if (!selectedCodexModel) return null
@@ -610,10 +646,22 @@ export function AgentModelSelector({
                       value={getItemKey(item)}
                       onSelect={() => handleItemClick(item)}
                       disabled={disabled}
-                      className={cn("gap-2", crossProvider && "opacity-60")}
+                      className={cn("gap-2 items-start", crossProvider && "opacity-60")}
                     >
                       {getItemIcon(item)}
-                      <span className="truncate flex-1">{getItemLabel(item)}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate">{getItemLabel(item)}</div>
+                        {getClaudeSlotSubtitle(item) && (
+                          <div className="truncate text-[11px] text-muted-foreground">
+                            {getClaudeSlotSubtitle(item)}
+                          </div>
+                        )}
+                        {getOpenAICompatibleSlotSubtitle(item) && (
+                          <div className="truncate text-[11px] text-muted-foreground">
+                            {getOpenAICompatibleSlotSubtitle(item)}
+                          </div>
+                        )}
+                      </div>
                       {crossProvider && (
                         <span className="text-[10px] text-muted-foreground shrink-0">New chat</span>
                       )}
@@ -648,7 +696,7 @@ export function AgentModelSelector({
 
       <CrossProviderConfirmDialog
         isOpen={confirmDialogOpen}
-        providerName={pendingProvider === "codex" ? "Codex" : "Claude Code"}
+        providerName={pendingProvider === "codex" ? "OpenAI-compatible" : "Anthropic-compatible"}
         onConfirm={handleConfirmCrossProvider}
         onClose={handleCloseConfirmDialog}
       />

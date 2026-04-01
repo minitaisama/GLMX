@@ -7,6 +7,8 @@ import { OriginalMCPIcon } from "../../../components/ui/icons"
 import { sessionInfoAtom, type MCPServer } from "../../../lib/atoms"
 import { cn } from "../../../lib/utils"
 import { pendingMentionAtom } from "../../agents/atoms"
+import { trpc } from "../../../lib/trpc"
+import { Button } from "../../../components/ui/button"
 
 function formatToolName(toolName: string): string {
   return toolName
@@ -62,10 +64,40 @@ function ServerIcon({ server }: { server: MCPServer }) {
   return <OriginalMCPIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
 }
 
-export const McpWidget = memo(function McpWidget() {
+interface McpWidgetProps {
+  projectPath?: string | null
+}
+
+function statusTone(status: string) {
+  if (status === "connected") return "text-emerald-400"
+  if (status === "needs-auth") return "text-amber-400"
+  if (status === "failed") return "text-red-400"
+  if (status === "pending") return "text-muted-foreground"
+  return "text-muted-foreground"
+}
+
+export const McpWidget = memo(function McpWidget({ projectPath }: McpWidgetProps) {
   const sessionInfo = useAtomValue(sessionInfoAtom)
   const setPendingMention = useSetAtom(pendingMentionAtom)
   const [expandedServers, setExpandedServers] = useState<Set<string>>(new Set())
+  const [testedAt, setTestedAt] = useState<string | null>(null)
+
+  const normalizedProjectPath = projectPath?.trim() || ""
+
+  const { data: configuredData } = trpc.claude.getMcpConfig.useQuery(
+    { projectPath: normalizedProjectPath },
+    {
+      enabled: !!normalizedProjectPath,
+      retry: false,
+      refetchOnWindowFocus: false,
+    },
+  )
+
+  const testMcpMutation = trpc.claude.testMcpServers.useMutation({
+    onSuccess: (data) => {
+      setTestedAt(data.testedAt)
+    },
+  })
 
   const toolsByServer = useMemo(() => {
     if (!sessionInfo?.tools || !sessionInfo?.mcpServers) return new Map<string, string[]>()
@@ -86,7 +118,44 @@ export const McpWidget = memo(function McpWidget() {
     return map
   }, [sessionInfo?.tools, sessionInfo?.mcpServers])
 
-  if (!sessionInfo?.mcpServers || sessionInfo.mcpServers.length === 0) {
+  const configuredMap = useMemo(() => {
+    const map = new Map<
+      string,
+      { status: string }
+    >()
+    for (const server of configuredData?.mcpServers || []) {
+      map.set(server.name, { status: server.status })
+    }
+    return map
+  }, [configuredData?.mcpServers])
+
+  const liveSessionMap = useMemo(() => {
+    const map = new Map<string, MCPServer["status"]>()
+    for (const server of sessionInfo?.mcpServers || []) {
+      map.set(server.name, server.status)
+    }
+    return map
+  }, [sessionInfo?.mcpServers])
+
+  const testedMap = useMemo(() => {
+    const map = new Map<
+      string,
+      { status: string; toolCount: number; error?: string }
+    >()
+    for (const server of testMcpMutation.data?.servers || []) {
+      map.set(server.name, server)
+    }
+    return map
+  }, [testMcpMutation.data?.servers])
+
+  const allServerNames = useMemo(() => {
+    const names = new Set<string>()
+    for (const name of configuredMap.keys()) names.add(name)
+    for (const name of liveSessionMap.keys()) names.add(name)
+    return Array.from(names).sort((a, b) => a.localeCompare(b))
+  }, [configuredMap, liveSessionMap])
+
+  if (allServerNames.length === 0) {
     return (
       <div className="px-2 py-2">
         <div className="text-xs text-muted-foreground">
@@ -119,10 +188,45 @@ export const McpWidget = memo(function McpWidget() {
 
   return (
     <div className="px-2 py-1.5 flex flex-col gap-0.5">
-      {sessionInfo.mcpServers.map((server) => {
+      <div className="flex items-center justify-between px-1 py-1">
+        <span className="text-[11px] text-muted-foreground">
+          Configured vs Live
+        </span>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={!normalizedProjectPath || testMcpMutation.isPending}
+          className="h-5 px-1.5 text-[10px]"
+          onClick={() => {
+            if (!normalizedProjectPath) return
+            testMcpMutation.mutate({ projectPath: normalizedProjectPath })
+          }}
+        >
+          {testMcpMutation.isPending ? "Testing..." : "Test MCP"}
+        </Button>
+      </div>
+      {!normalizedProjectPath && (
+        <div className="px-1 pb-1 text-[10px] text-amber-500/90">
+          Live MCP test requires a local git workspace path.
+        </div>
+      )}
+      {testedAt && (
+        <div className="px-1 pb-1 text-[10px] text-muted-foreground">
+          Last test: {new Date(testedAt).toLocaleTimeString()}
+        </div>
+      )}
+      {allServerNames.map((serverName) => {
+        const server = sessionInfo?.mcpServers?.find((s) => s.name === serverName) || {
+          name: serverName,
+          status: "pending" as const,
+        }
         const tools = toolsByServer.get(server.name) || []
         const isExpanded = expandedServers.has(server.name)
         const hasTools = tools.length > 0
+        const configuredStatus = configuredMap.get(server.name)?.status || "not-configured"
+        const liveStatus = testedMap.get(server.name)?.status || liveSessionMap.get(server.name) || "unknown"
+        const liveToolCount = testedMap.get(server.name)?.toolCount
+        const liveError = testedMap.get(server.name)?.error
 
         return (
           <div key={server.name}>
@@ -154,6 +258,22 @@ export const McpWidget = memo(function McpWidget() {
                 />
               )}
             </button>
+            <div className="ml-[18px] pb-1 flex flex-wrap items-center gap-2 text-[10px]">
+              <span className={cn("font-medium", statusTone(configuredStatus))}>
+                Configured: {configuredStatus}
+              </span>
+              <span className={cn("font-medium", statusTone(liveStatus))}>
+                Live: {liveStatus}
+              </span>
+              {typeof liveToolCount === "number" && (
+                <span className="text-muted-foreground">tools: {liveToolCount}</span>
+              )}
+            </div>
+            {liveError && (
+              <div className="ml-[18px] pb-1 text-[10px] text-red-400 truncate">
+                {liveError}
+              </div>
+            )}
 
             {/* Tools list */}
             {isExpanded && hasTools && (

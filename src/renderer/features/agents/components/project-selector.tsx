@@ -51,67 +51,59 @@ export function ProjectSelector() {
   // Get tRPC utils for cache management
   const utils = trpc.useUtils()
 
+  const syncSelectedProject = async (
+    project: NonNullable<Exclude<ReturnType<typeof openFolder["data"]>, undefined>> & {
+      id: string
+      name: string
+      path: string
+      gitRemoteUrl?: string | null
+      gitProvider?: "github" | "gitlab" | "bitbucket" | null
+      gitOwner?: string | null
+      gitRepo?: string | null
+    },
+  ) => {
+    utils.projects.list.setData(undefined, (oldData) => {
+      if (!oldData) return [project]
+      const exists = oldData.some((p) => p.id === project.id)
+      if (exists) {
+        return oldData.map((p) =>
+          p.id === project.id ? { ...p, ...project } : p,
+        )
+      }
+      return [project, ...oldData]
+    })
+
+    await utils.projects.list.invalidate()
+
+    setSelectedProject({
+      id: project.id,
+      name: project.name,
+      path: project.path,
+      gitRemoteUrl: project.gitRemoteUrl,
+      gitProvider: project.gitProvider as
+        | "github"
+        | "gitlab"
+        | "bitbucket"
+        | null,
+      gitOwner: project.gitOwner,
+      gitRepo: project.gitRepo,
+    })
+  }
+
   // Open folder mutation
   const openFolder = trpc.projects.openFolder.useMutation({
-    onSuccess: (project) => {
+    onSuccess: async (project) => {
       if (project) {
-        // Optimistically update the projects list cache to prevent validation failures
-        utils.projects.list.setData(undefined, (oldData) => {
-          if (!oldData) return [project]
-          const exists = oldData.some((p) => p.id === project.id)
-          if (exists) {
-            return oldData.map((p) =>
-              p.id === project.id ? { ...p, updatedAt: project.updatedAt } : p,
-            )
-          }
-          return [project, ...oldData]
-        })
-
-        setSelectedProject({
-          id: project.id,
-          name: project.name,
-          path: project.path,
-          gitRemoteUrl: project.gitRemoteUrl,
-          gitProvider: project.gitProvider as
-            | "github"
-            | "gitlab"
-            | "bitbucket"
-            | null,
-          gitOwner: project.gitOwner,
-          gitRepo: project.gitRepo,
-        })
+        await syncSelectedProject(project)
       }
     },
   })
 
   // Clone from GitHub mutation
   const cloneFromGitHub = trpc.projects.cloneFromGitHub.useMutation({
-    onSuccess: (project) => {
+    onSuccess: async (project) => {
       if (project) {
-        utils.projects.list.setData(undefined, (oldData) => {
-          if (!oldData) return [project]
-          const exists = oldData.some((p) => p.id === project.id)
-          if (exists) {
-            return oldData.map((p) =>
-              p.id === project.id ? { ...p, updatedAt: project.updatedAt } : p,
-            )
-          }
-          return [project, ...oldData]
-        })
-
-        setSelectedProject({
-          id: project.id,
-          name: project.name,
-          path: project.path,
-          gitRemoteUrl: project.gitRemoteUrl,
-          gitProvider: project.gitProvider as
-            | "github"
-            | "gitlab"
-            | "bitbucket"
-            | null,
-          gitOwner: project.gitOwner,
-          gitRepo: project.gitRepo,
-        })
+        await syncSelectedProject(project)
         setGithubDialogOpen(false)
         setGithubUrl("")
       }
@@ -157,10 +149,19 @@ export function ProjectSelector() {
     // After loading, validate against DB and use fresh data
     if (!projects) return null
     const dbProject = projects.find((p) => p.id === selectedProject.id)
-    if (!dbProject) return null
+    if (!dbProject || dbProject.pathExists === false) return null
     return {
       ...selectedProject,
       name: dbProject.name,
+      path: dbProject.path,
+      gitRemoteUrl: dbProject.gitRemoteUrl,
+      gitProvider: dbProject.gitProvider as
+        | "github"
+        | "gitlab"
+        | "bitbucket"
+        | null,
+      gitOwner: dbProject.gitOwner,
+      gitRepo: dbProject.gitRepo,
     }
   }, [selectedProject, projects, isLoadingProjects])
 
@@ -230,6 +231,11 @@ export function ProjectSelector() {
                         className="h-4 w-4"
                       />
                       <span className="truncate flex-1">{project.name}</span>
+                      {project.pathExists === false && (
+                        <span className="text-[10px] uppercase tracking-wide text-destructive">
+                          Missing
+                        </span>
+                      )}
                       {isSelected && (
                         <CheckIcon className="h-4 w-4 shrink-0" />
                       )}

@@ -28,6 +28,7 @@ import {
   showWorkspaceIconAtom,
   betaKanbanEnabledAtom,
   betaAutomationsEnabledAtom,
+  defaultAgentModeAtom,
 } from "../../lib/atoms"
 import {
   useRemoteChats,
@@ -119,6 +120,7 @@ import {
   pendingUserQuestionsAtom,
   desktopViewAtom,
   type UndoItem,
+  subChatModeAtomFamily,
 } from "../agents/atoms"
 import { NetworkStatus } from "../../components/ui/network-status"
 import { useAgentSubChatStore, OPEN_SUB_CHATS_CHANGE_EVENT } from "../agents/stores/sub-chat-store"
@@ -133,10 +135,19 @@ import {
   TrafficLights,
 } from "../agents/components/traffic-light-spacer"
 import { useHotkeys } from "react-hotkeys-hook"
+import { useShallow } from "zustand/react/shallow"
 import { Checkbox } from "../../components/ui/checkbox"
 import { useHaptic } from "./hooks/use-haptic"
 import { TypewriterText } from "../../components/ui/typewriter-text"
 import { exportChat, copyChat, type ExportFormat } from "../agents/lib/export-chat"
+import { trpcClient } from "../../lib/trpc"
+import { appStore } from "../../lib/jotai-store"
+import {
+  buildContextPreview,
+  buildRenameSuggestion,
+  extractRenameContext,
+} from "../agents/utils/rename-context"
+import { SubChatContextMenu } from "../agents/ui/sub-chat-context-menu"
 
 // Feedback URL: uses env variable for hosted version, falls back to public Discord for open source
 const FEEDBACK_URL =
@@ -173,6 +184,195 @@ const GitHubAvatar = React.memo(function GitHubAvatar({
         onLoad={handleLoad}
         onError={handleError}
       />
+    </div>
+  )
+})
+
+const ThreadContextSection = React.memo(function ThreadContextSection({
+  chatId,
+  activeSubChatId,
+  openSubChatIds,
+  pinnedSubChatIds,
+  allSubChats,
+  onCreateThread,
+  onSelectThread,
+  onTogglePinThread,
+  onRenameThread,
+  onArchiveThread,
+  isCreating,
+}: {
+  chatId: string
+  activeSubChatId: string | null
+  openSubChatIds: string[]
+  pinnedSubChatIds: string[]
+  allSubChats: Array<{
+    id: string
+    name: string
+    updated_at?: string
+    mode?: "plan" | "agent"
+  }>
+  onCreateThread: () => void
+  onSelectThread: (subChatId: string) => void
+  onTogglePinThread: (subChatId: string) => void
+  onRenameThread: (subChat: { id: string; name: string }) => void
+  onArchiveThread: (subChatId: string) => void
+  isCreating: boolean
+}) {
+  const threadRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
+
+  const subChatsById = useMemo(
+    () => new Map(allSubChats.map((subChat) => [subChat.id, subChat])),
+    [allSubChats],
+  )
+
+  const orderedThreads = useMemo(() => {
+    const openThreads = openSubChatIds
+      .map((id) => subChatsById.get(id))
+      .filter((thread): thread is NonNullable<typeof thread> => Boolean(thread))
+
+    const closedThreads = allSubChats
+      .filter((thread) => !openSubChatIds.includes(thread.id))
+      .sort((a, b) => {
+        const aTime = a.updated_at ? new Date(a.updated_at).getTime() : 0
+        const bTime = b.updated_at ? new Date(b.updated_at).getTime() : 0
+        return bTime - aTime
+      })
+
+    const ordered = [...openThreads, ...closedThreads]
+    if (!activeSubChatId) return ordered.slice(0, 8)
+
+    const activeIndex = ordered.findIndex((thread) => thread.id === activeSubChatId)
+    if (activeIndex <= 0) return ordered.slice(0, 8)
+
+    const activeThread = ordered[activeIndex]
+    if (!activeThread) return ordered.slice(0, 8)
+
+    return [activeThread, ...ordered.filter((thread) => thread.id !== activeSubChatId)].slice(
+      0,
+      8,
+    )
+  }, [activeSubChatId, allSubChats, openSubChatIds, subChatsById])
+
+  useEffect(() => {
+    if (!activeSubChatId) return
+    const selectedThreadElement = threadRefs.current.get(activeSubChatId)
+    selectedThreadElement?.scrollIntoView({
+      block: "nearest",
+      behavior: "smooth",
+    })
+  }, [activeSubChatId, orderedThreads.length])
+
+  const handleArchiveOtherThreads = useCallback((subChatId: string) => {
+    orderedThreads
+      .filter((thread) => thread.id !== subChatId)
+      .forEach((thread) => onArchiveThread(thread.id))
+  }, [orderedThreads, onArchiveThread])
+
+  const handleArchiveThreadsBelow = useCallback((subChatId: string) => {
+    const currentThreadIndex = orderedThreads.findIndex((thread) => thread.id === subChatId)
+    if (currentThreadIndex === -1 || currentThreadIndex >= orderedThreads.length - 1) return
+    orderedThreads.slice(currentThreadIndex + 1).forEach((thread) => onArchiveThread(thread.id))
+  }, [orderedThreads, onArchiveThread])
+
+  if (orderedThreads.length === 0) return null
+
+  return (
+    <div className="px-2 pb-3 flex-shrink-0">
+      <div className="rounded-xl border border-border/60 bg-muted/25">
+        <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-border/50">
+          <div className="min-w-0">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+              Threads
+            </div>
+            <div className="text-xs text-muted-foreground truncate">
+              Current workspace context
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onCreateThread}
+            disabled={isCreating}
+            className="h-7 rounded-md px-2 text-xs"
+          >
+            {isCreating ? "Creating..." : "New thread"}
+          </Button>
+        </div>
+
+        <div className="p-2 space-y-1">
+          {orderedThreads.map((thread) => {
+            const isActive = thread.id === activeSubChatId
+            const isOpen = openSubChatIds.includes(thread.id)
+            const isPinned = pinnedSubChatIds.includes(thread.id)
+            const threadName = thread.name || "New thread"
+
+            return (
+              <ContextMenu key={`${chatId}-${thread.id}`}>
+                <ContextMenuTrigger asChild>
+                  <button
+                    ref={(element) => {
+                      if (element) {
+                        threadRefs.current.set(thread.id, element)
+                      } else {
+                        threadRefs.current.delete(thread.id)
+                      }
+                    }}
+                    type="button"
+                    onClick={() => onSelectThread(thread.id)}
+                    className={cn(
+                      "w-full rounded-lg px-2.5 py-2 text-left transition-colors",
+                      isActive
+                        ? "bg-secondary text-foreground"
+                        : "hover:bg-muted/70 text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <div className="flex items-center gap-2">
+                      <div
+                        className={cn(
+                          "h-2 w-2 rounded-full flex-shrink-0",
+                          thread.mode === "plan" ? "bg-amber-500/90" : "bg-primary/80",
+                        )}
+                      />
+                      <span className="flex-1 truncate text-sm font-medium">
+                        {threadName}
+                      </span>
+                      {isOpen && (
+                        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Open
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                </ContextMenuTrigger>
+                <SubChatContextMenu
+                  subChat={{
+                    id: thread.id,
+                    name: threadName,
+                    created_at: thread.updated_at ?? new Date().toISOString(),
+                    mode: thread.mode,
+                  }}
+                  isPinned={isPinned}
+                  onTogglePin={onTogglePinThread}
+                  onRename={(subChat) =>
+                    onRenameThread({
+                      id: subChat.id,
+                      name: subChat.name || "New thread",
+                    })}
+                  onArchive={onArchiveThread}
+                  onArchiveOthers={handleArchiveOtherThreads}
+                  onArchiveAllBelow={handleArchiveThreadsBelow}
+                  isOnlyChat={orderedThreads.length <= 1}
+                  currentIndex={orderedThreads.findIndex(
+                    (orderedThread) => orderedThread.id === thread.id,
+                  )}
+                  totalCount={orderedThreads.length}
+                  chatId={chatId}
+                />
+              </ContextMenu>
+            )
+          })}
+        </div>
+      </div>
     </div>
   )
 })
@@ -1704,6 +1904,9 @@ export function AgentsSidebar({
   // Read unseen changes from global atoms
   const unseenChanges = useAtomValue(agentsUnseenChangesAtom)
   const justCreatedIds = useAtomValue(justCreatedIdsAtom)
+  const setJustCreatedIds = useSetAtom(justCreatedIdsAtom)
+  const defaultAgentMode = useAtomValue(defaultAgentModeAtom)
+  const [isCreatingThread, setIsCreatingThread] = useState(false)
 
   // Haptic feedback
   const { trigger: triggerHaptic } = useHaptic()
@@ -1720,6 +1923,12 @@ export function AgentsSidebar({
     isRemote?: boolean
   } | null>(null)
   const [renameLoading, setRenameLoading] = useState(false)
+  const [renameThreadDialogOpen, setRenameThreadDialogOpen] = useState(false)
+  const [renamingThread, setRenamingThread] = useState<{
+    id: string
+    name: string
+  } | null>(null)
+  const [renameThreadLoading, setRenameThreadLoading] = useState(false)
 
   // Confirm archive dialog state
   const [confirmArchiveDialogOpen, setConfirmArchiveDialogOpen] = useState(false)
@@ -1953,6 +2162,23 @@ export function AgentsSidebar({
 
   // Unified undo stack for workspaces and sub-chats (Jotai atom)
   const [undoStack, setUndoStack] = useAtom(undoStackAtom)
+  const {
+    chatId: subChatStoreChatId,
+    activeSubChatId,
+    openSubChatIds,
+    pinnedSubChatIds,
+    allSubChats,
+    togglePinSubChat,
+  } = useAgentSubChatStore(
+    useShallow((state) => ({
+      chatId: state.chatId,
+      activeSubChatId: state.activeSubChatId,
+      openSubChatIds: state.openSubChatIds,
+      pinnedSubChatIds: state.pinnedSubChatIds,
+      allSubChats: state.allSubChats,
+      togglePinSubChat: state.togglePinSubChat,
+    })),
+  )
 
   // Restore chat mutation (for undo)
   const restoreChatMutation = trpc.chats.restore.useMutation({
@@ -2040,49 +2266,47 @@ export function AgentsSidebar({
   })
 
   // Cmd+Z to undo archive (supports multiple undos for workspaces AND sub-chats)
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "z" && undoStack.length > 0) {
-        e.preventDefault()
-        // Get the most recent item
-        const lastItem = undoStack[undoStack.length - 1]
-        if (!lastItem) return
+  const undoHotkeyHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {})
 
-        // Clear timeout and remove from stack
-        clearTimeout(lastItem.timeoutId)
-        setUndoStack((prev) => prev.slice(0, -1))
+  undoHotkeyHandlerRef.current = (e: KeyboardEvent) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "z" && undoStack.length > 0) {
+      e.preventDefault()
+      const lastItem = undoStack[undoStack.length - 1]
+      if (!lastItem) return
 
-        if (lastItem.type === "workspace") {
-          // Restore workspace from archive
-          if (lastItem.isRemote) {
-            // Strip remote_ prefix before calling API (stored with prefix for undo stack identification)
-            const originalId = lastItem.chatId.replace(/^remote_/, '')
-            restoreRemoteChatMutation.mutate(originalId, {
-              onSuccess: () => {
-                setSelectedChatId(originalId)
-                setSelectedChatIsRemote(true)
-                setChatSourceMode("sandbox")
-              },
-              onError: (error) => {
-                console.error('[handleUndo] Failed to restore remote workspace:', error)
-                toast.error("Failed to restore workspace")
-              },
-            })
-          } else {
-            restoreChatMutation.mutate({ id: lastItem.chatId })
-          }
-        } else if (lastItem.type === "subchat") {
-          // Restore sub-chat tab (re-add to open tabs)
-          const store = useAgentSubChatStore.getState()
-          store.addToOpenSubChats(lastItem.subChatId)
-          store.setActiveSubChat(lastItem.subChatId)
+      clearTimeout(lastItem.timeoutId)
+      setUndoStack((prev) => prev.slice(0, -1))
+
+      if (lastItem.type === "workspace") {
+        if (lastItem.isRemote) {
+          const originalId = lastItem.chatId.replace(/^remote_/, "")
+          restoreRemoteChatMutation.mutate(originalId, {
+            onSuccess: () => {
+              setSelectedChatId(originalId)
+              setSelectedChatIsRemote(true)
+              setChatSourceMode("sandbox")
+            },
+            onError: (error) => {
+              console.error("[handleUndo] Failed to restore remote workspace:", error)
+              toast.error("Failed to restore workspace")
+            },
+          })
+        } else {
+          restoreChatMutation.mutate({ id: lastItem.chatId })
         }
+      } else if (lastItem.type === "subchat") {
+        const store = useAgentSubChatStore.getState()
+        store.addToOpenSubChats(lastItem.subChatId)
+        store.setActiveSubChat(lastItem.subChatId)
       }
     }
+  }
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => undoHotkeyHandlerRef.current(e)
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [undoStack, setUndoStack, restoreChatMutation, restoreRemoteChatMutation, setSelectedChatId])
+  }, [])
 
   // Batch archive mutation
   const archiveChatsBatchMutation = trpc.chats.archiveBatch.useMutation({
@@ -2109,6 +2333,59 @@ export function AgentsSidebar({
       setUndoStack((prev) => [...prev, ...newItems])
     },
   })
+
+  const handleCreateThread = useCallback(async () => {
+    if (!selectedChatId || selectedChatIsRemote) return
+
+    const store = useAgentSubChatStore.getState()
+    setIsCreatingThread(true)
+
+    try {
+      const newSubChat = await trpcClient.chats.createSubChat.mutate({
+        chatId: selectedChatId,
+        name: "New Chat",
+        mode: defaultAgentMode,
+      })
+
+      setJustCreatedIds((prev) => new Set([...prev, newSubChat.id]))
+      appStore.set(subChatModeAtomFamily(newSubChat.id), defaultAgentMode)
+      store.addToAllSubChats({
+        id: newSubChat.id,
+        name: newSubChat.name || "New Chat",
+        created_at: new Date().toISOString(),
+        mode: defaultAgentMode,
+      })
+      store.addToOpenSubChats(newSubChat.id)
+      store.setActiveSubChat(newSubChat.id)
+      setShowNewChatForm(false)
+    } catch (error) {
+      console.error("[AgentsSidebar] Failed to create thread", error)
+      toast.error("Failed to create thread")
+    } finally {
+      setIsCreatingThread(false)
+    }
+  }, [
+    defaultAgentMode,
+    selectedChatId,
+    selectedChatIsRemote,
+    setJustCreatedIds,
+    setShowNewChatForm,
+  ])
+
+  const handleSelectThread = useCallback((subChatId: string) => {
+    const store = useAgentSubChatStore.getState()
+    if (!store.openSubChatIds.includes(subChatId)) {
+      store.addToOpenSubChats(subChatId)
+    }
+    store.setActiveSubChat(subChatId)
+    setShowNewChatForm(false)
+  }, [setShowNewChatForm])
+
+  const handleArchiveThread = useCallback((subChatId: string) => {
+    const store = useAgentSubChatStore.getState()
+    if (store.openSubChatIds.length <= 1) return
+    store.removeFromOpenSubChats(subChatId)
+  }, [])
 
   // Reset selected chat when project changes (but not on initial load)
   const prevProjectIdRef = useRef<string | null | undefined>(undefined)
@@ -2171,6 +2448,11 @@ export function AgentsSidebar({
       toast.error("Failed to rename agent")
     },
   })
+  const renameSubChatMutation = trpc.chats.renameSubChat.useMutation({
+    onError: () => {
+      toast.error("Failed to rename thread")
+    },
+  })
 
   const handleTogglePin = useCallback((chatId: string) => {
     setPinnedChatIds((prev) => {
@@ -2188,6 +2470,23 @@ export function AgentsSidebar({
     setRenamingChat(chat as { id: string; name: string; isRemote?: boolean })
     setRenameDialogOpen(true)
   }, [])
+
+  const { data: renamingChatData } = trpc.chats.get.useQuery(
+    renamingChat?.id ? { id: renamingChat.id } : { id: "" },
+    {
+      enabled: renameDialogOpen && !!renamingChat?.id && !renamingChat?.isRemote,
+      staleTime: 30_000,
+    },
+  )
+
+  const renameDialogSuggestion = useMemo(() => {
+    const context = extractRenameContext(renamingChatData?.subChats?.[0]?.messages)
+
+    return {
+      contextPreview: buildContextPreview(context),
+      suggestedName: buildRenameSuggestion(context, renamingChat?.name),
+    }
+  }, [renamingChat?.name, renamingChatData])
 
   const handleRenameSave = async (newName: string) => {
     if (!renamingChat) return
@@ -2235,6 +2534,43 @@ export function AgentsSidebar({
       setRenamingChat(null)
     }
   }
+
+  const handleRenameThreadClick = useCallback((subChat: { id: string; name: string }) => {
+    setRenamingThread(subChat)
+    setRenameThreadDialogOpen(true)
+  }, [])
+
+  const handleRenameThreadSave = useCallback(
+    async (newName: string) => {
+      if (!renamingThread) return
+
+      const threadId = renamingThread.id
+      const previousName = renamingThread.name || "New thread"
+
+      useAgentSubChatStore.getState().updateSubChatName(threadId, newName)
+      setJustCreatedIds((prev) => {
+        if (!prev.has(threadId)) return prev
+        const next = new Set(prev)
+        next.delete(threadId)
+        return next
+      })
+
+      setRenameThreadLoading(true)
+      try {
+        await renameSubChatMutation.mutateAsync({
+          subChatId: threadId,
+          name: newName,
+        })
+        setRenameThreadDialogOpen(false)
+      } catch {
+        useAgentSubChatStore.getState().updateSubChatName(threadId, previousName)
+      } finally {
+        setRenameThreadLoading(false)
+        setRenamingThread(null)
+      }
+    },
+    [renamingThread, renameSubChatMutation, setJustCreatedIds],
+  )
 
   // Check if all selected chats are pinned
   const areAllSelectedPinned = useMemo(() => {
@@ -2285,10 +2621,28 @@ export function AgentsSidebar({
     if (!agentChats)
       return { pinnedAgents: [], unpinnedAgents: [], filteredChats: [] }
 
-    const filtered = searchQuery.trim()
-      ? agentChats.filter((chat) =>
-          (chat.name ?? "").toLowerCase().includes(searchQuery.toLowerCase()),
-        )
+    const normalizedQuery = searchQuery.trim().toLowerCase()
+    const filtered = normalizedQuery
+      ? agentChats.filter((chat) => {
+          const project = chat.projectId
+            ? projects?.find((candidate) => candidate.id === chat.projectId)
+            : null
+          const searchableFields = [
+            chat.name ?? "",
+            chat.branch ?? "",
+            chat.baseBranch ?? "",
+            chat.meta?.repository ?? "",
+            project?.name ?? "",
+            project?.path ?? "",
+            project?.gitRemoteUrl ?? "",
+            project?.gitOwner ?? "",
+            project?.gitRepo ?? "",
+          ]
+
+          return searchableFields.some((value) =>
+            value.toLowerCase().includes(normalizedQuery),
+          )
+        })
       : agentChats
 
     const pinned = filtered.filter((chat) => pinnedChatIds.has(chat.id))
@@ -2299,7 +2653,7 @@ export function AgentsSidebar({
       unpinnedAgents: unpinned,
       filteredChats: [...pinned, ...unpinned],
     }
-  }, [searchQuery, agentChats, pinnedChatIds])
+  }, [searchQuery, agentChats, pinnedChatIds, projects])
 
   // Handle bulk archive of selected chats
   const handleBulkArchive = useCallback(() => {
@@ -3363,6 +3717,25 @@ export function AgentsSidebar({
               />
             </div>
           ) : null}
+
+          {selectedChatId &&
+          !selectedChatIsRemote &&
+          subChatStoreChatId === selectedChatId &&
+          allSubChats.length > 0 ? (
+            <ThreadContextSection
+              chatId={selectedChatId}
+              activeSubChatId={activeSubChatId}
+              openSubChatIds={openSubChatIds}
+              pinnedSubChatIds={pinnedSubChatIds}
+              allSubChats={allSubChats}
+              onCreateThread={handleCreateThread}
+              onSelectThread={handleSelectThread}
+              onTogglePinThread={togglePinSubChat}
+              onRenameThread={handleRenameThreadClick}
+              onArchiveThread={handleArchiveThread}
+              isCreating={isCreatingThread}
+            />
+          ) : null}
         </div>
 
         {/* Top gradient fade (appears when scrolled down) */}
@@ -3515,6 +3888,23 @@ export function AgentsSidebar({
         onSave={handleRenameSave}
         currentName={renamingChat?.name || ""}
         isLoading={renameLoading}
+        title="Rename workspace"
+        placeholder="Workspace name"
+        contextPreview={renameDialogSuggestion.contextPreview}
+        suggestedName={renameDialogSuggestion.suggestedName}
+      />
+
+      <AgentsRenameSubChatDialog
+        isOpen={renameThreadDialogOpen}
+        onClose={() => {
+          setRenameThreadDialogOpen(false)
+          setRenamingThread(null)
+        }}
+        onSave={handleRenameThreadSave}
+        currentName={renamingThread?.name || ""}
+        isLoading={renameThreadLoading}
+        title="Rename thread"
+        placeholder="Thread name"
       />
 
       {/* Confirm Archive Dialog */}

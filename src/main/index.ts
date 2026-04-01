@@ -29,7 +29,11 @@ import {
 import { cleanupGitWatchers } from "./lib/git/watcher"
 import { cancelAllPendingOAuth, handleMcpOAuthCallback } from "./lib/mcp-auth"
 import { getAllMcpConfigHandler, hasActiveClaudeSessions, abortAllClaudeSessions } from "./lib/trpc/routers/claude"
-import { getAllCodexMcpConfigHandler, hasActiveCodexStreams, abortAllCodexStreams } from "./lib/trpc/routers/codex"
+import {
+  getAllOpenAICompatibleMcpConfigHandler,
+  hasActiveOpenAICompatibleStreams,
+  abortAllOpenAICompatibleStreams,
+} from "./lib/trpc/routers/openai-compatible"
 import {
   createMainWindow,
   createWindow,
@@ -38,20 +42,40 @@ import {
   setIsQuitting,
 } from "./windows/main"
 import { windowManager } from "./windows/window-manager"
+import { logger } from "./lib/logger"
 
 import { IS_DEV, AUTH_SERVER_PORT } from "./constants"
 
 // Deep link protocol (must match package.json build.protocols.schemes)
 // Use different protocol in dev to avoid conflicts with production app
 const PROTOCOL = IS_DEV ? "zai-agent-dev" : "zai-agent"
+const APP_NAME = "GLMX"
+const APP_NAME_DEV = "GLMX Dev"
+
+// Set process app name as early as possible so OS integrations
+// (notifications/menus) use GLMX consistently.
+app.setName(IS_DEV ? APP_NAME_DEV : APP_NAME)
 
 // Set dev mode userData path BEFORE requestSingleInstanceLock()
 // This ensures dev and prod have separate instance locks
 if (IS_DEV) {
   const { join } = require("path")
-  const devUserData = join(app.getPath("userData"), "..", "ZAI Agent Dev")
+  const devUserData = join(app.getPath("userData"), "..", APP_NAME_DEV)
   app.setPath("userData", devUserData)
   console.log("[Dev] Using separate userData path:", devUserData)
+  logger.app.info("boot_started", {
+    version: app.getVersion(),
+    platform: process.platform,
+    profile: "dev",
+    userData: devUserData,
+  })
+} else {
+  logger.app.info("boot_started", {
+    version: app.getVersion(),
+    platform: process.platform,
+    profile: "packaged",
+    userData: app.getPath("userData"),
+  })
 }
 
 // Increase V8 old-space limit for renderer/main processes to reduce OOM frequency
@@ -159,7 +183,7 @@ export async function handleAuthCode(code: string): Promise<void> {
           win.loadURL(url.toString())
         } else {
           // Pass window ID via hash for production
-          win.loadFile(join(__dirname, "../renderer/index.html"), {
+          win.loadFile(join(app.getAppPath(), "out/renderer/index.html"), {
             hash: `windowId=${stableId}`,
           })
         }
@@ -283,19 +307,47 @@ console.log("[Protocol] =============================================")
 
 // Note: app.on("open-url") will be registered in app.whenReady()
 
-// SVG favicon as data URI for auth callback pages (matches web app favicon)
-const FAVICON_SVG = `<svg width="32" height="32" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" fill="#0033FF"/><path fill-rule="evenodd" clip-rule="evenodd" d="M800.165 148C842.048 148 876 181.952 876 223.835V686.415C876 690.606 872.606 694 868.415 694H640.915C636.729 694 633.335 697.394 633.335 701.585V868.415C633.335 872.606 629.936 876 625.75 876H223.835C181.952 876 148 842.048 148 800.165V702.59C148 697.262 150.807 692.326 155.376 689.586L427.843 526.1C434.031 522.388 431.956 513.238 425.327 512.118L423.962 512H155.585C151.394 512 148 508.606 148 504.415V337.585C148 333.394 151.394 330 155.585 330H443.75C447.936 330 451.335 326.606 451.335 322.415V155.585C451.335 151.394 454.729 148 458.915 148H800.165ZM458.915 330C454.729 330 451.335 333.394 451.335 337.585V686.415C451.335 690.606 454.729 694 458.915 694H625.75C629.936 694 633.335 690.606 633.335 686.415V337.585C633.335 333.394 629.936 330 625.75 330H458.915Z" fill="#F4F4F4"/></svg>`
-const FAVICON_DATA_URI = `data:image/svg+xml,${encodeURIComponent(FAVICON_SVG)}`
+function getBrandLogoBuffer(): Buffer | null {
+  const candidates = [
+    join(__dirname, "../renderer/brand-logo.png"),
+    join(process.cwd(), "out/renderer/brand-logo.png"),
+    join(process.cwd(), "src/renderer/public/brand-logo.png"),
+  ]
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return readFileSync(candidate)
+    }
+  }
+
+  return null
+}
+
+const BRAND_LOGO_BUFFER = getBrandLogoBuffer()
+const BRAND_LOGO_DATA_URI = BRAND_LOGO_BUFFER
+  ? `data:image/png;base64,${BRAND_LOGO_BUFFER.toString("base64")}`
+  : ""
 
 // Start local HTTP server for auth callbacks
 // This catches http://localhost:{AUTH_SERVER_PORT}/auth/callback?code=xxx and /callback (for MCP OAuth)
 const server = createServer((req, res) => {
     const url = new URL(req.url || "", `http://localhost:${AUTH_SERVER_PORT}`)
 
-    // Serve favicon
-    if (url.pathname === "/favicon.ico" || url.pathname === "/favicon.svg") {
-      res.writeHead(200, { "Content-Type": "image/svg+xml" })
-      res.end(FAVICON_SVG)
+    // Serve app logo/favicon for auth callback pages.
+    if (
+      url.pathname === "/favicon.ico" ||
+      url.pathname === "/favicon.png" ||
+      url.pathname === "/favicon.svg" ||
+      url.pathname === "/brand-logo.png"
+    ) {
+      if (!BRAND_LOGO_BUFFER) {
+        res.writeHead(404, { "Content-Type": "text/plain" })
+        res.end("Logo not found")
+        return
+      }
+
+      res.writeHead(200, { "Content-Type": "image/png" })
+      res.end(BRAND_LOGO_BUFFER)
       return
     }
 
@@ -316,8 +368,8 @@ const server = createServer((req, res) => {
 <html>
 <head>
   <meta charset="UTF-8">
-  <link rel="icon" type="image/svg+xml" href="${FAVICON_DATA_URI}">
-  <title>ZAI Agent - Authentication</title>
+  <link rel="icon" type="image/png" href="/brand-logo.png">
+  <title>GLMX - Authentication</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     :root {
@@ -366,9 +418,7 @@ const server = createServer((req, res) => {
 </head>
 <body>
   <div class="container">
-    <svg class="logo" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path fill-rule="evenodd" clip-rule="evenodd" d="M14.3333 0C15.2538 0 16 0.746192 16 1.66667V11.8333C16 11.9254 15.9254 12 15.8333 12H10.8333C10.7413 12 10.6667 12.0746 10.6667 12.1667V15.8333C10.6667 15.9254 10.592 16 10.5 16H1.66667C0.746192 16 0 15.2538 0 14.3333V12.1888C0 12.0717 0.0617409 11.9632 0.162081 11.903L6.15043 8.30986C6.28644 8.22833 6.24077 8.02716 6.09507 8.00256L6.06511 8H0.166667C0.0746186 8 0 7.92538 0 7.83333V4.16667C0 4.07462 0.0746193 4 0.166667 4H6.5C6.59205 4 6.66667 3.92538 6.66667 3.83333V0.166667C6.66667 0.0746193 6.74129 0 6.83333 0H14.3333ZM6.83333 4C6.74129 4 6.66667 4.07462 6.66667 4.16667V11.8333C6.66667 11.9254 6.74129 12 6.83333 12H10.5C10.592 12 10.6667 11.9254 10.6667 11.8333V4.16667C10.6667 4.07462 10.592 4 10.5 4H6.83333Z" fill="#0033FF"/>
-    </svg>
+    <img class="logo" src="${BRAND_LOGO_DATA_URI || "/brand-logo.png"}" alt="GLMX logo" />
     <h1>Authentication successful</h1>
     <p>You can close this tab</p>
   </div>
@@ -400,8 +450,8 @@ const server = createServer((req, res) => {
 <html>
 <head>
   <meta charset="UTF-8">
-  <link rel="icon" type="image/svg+xml" href="${FAVICON_DATA_URI}">
-  <title>ZAI Agent - MCP Authentication</title>
+  <link rel="icon" type="image/png" href="/brand-logo.png">
+  <title>GLMX - MCP Authentication</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     :root {
@@ -450,9 +500,7 @@ const server = createServer((req, res) => {
 </head>
 <body>
   <div class="container">
-    <svg class="logo" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path fill-rule="evenodd" clip-rule="evenodd" d="M14.3333 0C15.2538 0 16 0.746192 16 1.66667V11.8333C16 11.9254 15.9254 12 15.8333 12H10.8333C10.7413 12 10.6667 12.0746 10.6667 12.1667V15.8333C10.6667 15.9254 10.592 16 10.5 16H1.66667C0.746192 16 0 15.2538 0 14.3333V12.1888C0 12.0717 0.0617409 11.9632 0.162081 11.903L6.15043 8.30986C6.28644 8.22833 6.24077 8.02716 6.09507 8.00256L6.06511 8H0.166667C0.0746186 8 0 7.92538 0 7.83333V4.16667C0 4.07462 0.0746193 4 0.166667 4H6.5C6.59205 4 6.66667 3.92538 6.66667 3.83333V0.166667C6.66667 0.0746193 6.74129 0 6.83333 0H14.3333ZM6.83333 4C6.74129 4 6.66667 4.07462 6.66667 4.16667V11.8333C6.66667 11.9254 6.74129 12 6.83333 12H10.5C10.592 12 10.6667 11.9254 10.6667 11.8333V4.16667C10.6667 4.07462 10.592 4 10.5 4H6.83333Z" fill="#0033FF"/>
-    </svg>
+    <img class="logo" src="${BRAND_LOGO_DATA_URI || "/brand-logo.png"}" alt="GLMX logo" />
     <h1>MCP Server authenticated</h1>
     <p>You can close this tab</p>
   </div>
@@ -469,9 +517,27 @@ const server = createServer((req, res) => {
     }
   })
 
-server.listen(AUTH_SERVER_PORT, () => {
-  console.log(`[Auth Server] Listening on http://localhost:${AUTH_SERVER_PORT}`)
-})
+let authServerStarted = false
+
+function startAuthCallbackServer(): void {
+  if (authServerStarted) return
+
+  server.once("error", (error: NodeJS.ErrnoException) => {
+    if (error.code === "EADDRINUSE") {
+      console.warn(
+        `[Auth Server] Port ${AUTH_SERVER_PORT} already in use, skipping callback server startup`,
+      )
+      return
+    }
+
+    throw error
+  })
+
+  server.listen(AUTH_SERVER_PORT, () => {
+    authServerStarted = true
+    console.log(`[Auth Server] Listening on http://localhost:${AUTH_SERVER_PORT}`)
+  })
+}
 
 // Clean up stale lock files from crashed instances
 // Returns true if locks were cleaned, false otherwise
@@ -531,6 +597,8 @@ if (!gotTheLock) {
 }
 
 if (gotTheLock) {
+  startAuthCallbackServer()
+
   // Handle second instance launch (also handles deep links on Windows/Linux)
   app.on("second-instance", (_event, commandLine) => {
     // Check for deep link in command line args
@@ -553,10 +621,8 @@ if (gotTheLock) {
 
   // App ready
   app.whenReady().then(async () => {
-    // Set dev mode app name (userData path was already set before requestSingleInstanceLock)
-    // if (IS_DEV) {
-    //   app.name = "ZAI Agent Dev"
-    // }
+    logger.app.info("app_ready")
+    app.setName(IS_DEV ? APP_NAME_DEV : APP_NAME)
 
 
     // Register protocol handler (must be after app is ready)
@@ -571,10 +637,14 @@ if (gotTheLock) {
 
     // Set app user model ID for Windows (different in dev to avoid taskbar conflicts)
     if (process.platform === "win32") {
-      app.setAppUserModelId(IS_DEV ? "ai.z.agent.dev" : "ai.z.agent")
+      app.setAppUserModelId(IS_DEV ? "ai.z.glmx.dev" : "ai.z.glmx")
     }
 
-    console.log(`[App] Starting ZAI Agent${IS_DEV ? " (DEV)" : ""}...`)
+    console.log(`[App] Starting ${APP_NAME}${IS_DEV ? " (DEV)" : ""}...`)
+    logger.app.info("boot_state_changed", {
+      from: "boot_started",
+      to: "app_ready",
+    })
 
     // Verify protocol registration after app is ready
     // This helps diagnose first-install issues where the protocol isn't recognized yet
@@ -598,7 +668,7 @@ if (gotTheLock) {
 
     // Set About panel options with bundled runtime version
     app.setAboutPanelOptions({
-      applicationName: "ZAI Agent",
+      applicationName: APP_NAME,
       applicationVersion: app.getVersion(),
       version: `GLMX Runtime ${claudeCodeVersion}`,
       copyright: "Copyright © 2026 ZAI",
@@ -628,7 +698,7 @@ if (gotTheLock) {
           label: app.name,
           submenu: [
             {
-              label: "About ZAI Agent",
+              label: `About ${APP_NAME}`,
               click: () => app.showAboutPanel(),
             },
             {
@@ -661,7 +731,7 @@ if (gotTheLock) {
                     dialog.showMessageBox({
                       type: "info",
                       message: "CLI command uninstalled",
-                      detail: "The '1code' command has been removed from your PATH.",
+                      detail: "The '1code' command has been removed from your PATH for GLMX.",
                     })
                     buildMenu()
                   } else {
@@ -674,7 +744,7 @@ if (gotTheLock) {
                       type: "info",
                       message: "CLI command installed",
                       detail:
-                        "You can now use '1code .' in any terminal to open ZAI Agent in that directory.",
+                        "You can now use '1code .' in any terminal to open GLMX in that directory.",
                     })
                     buildMenu()
                   } else {
@@ -694,7 +764,7 @@ if (gotTheLock) {
               label: "Quit",
               accelerator: "CmdOrCtrl+Q",
               click: async () => {
-                if (hasActiveClaudeSessions() || hasActiveCodexStreams()) {
+                if (hasActiveClaudeSessions() || hasActiveOpenAICompatibleStreams()) {
                   const { dialog } = await import("electron")
                   const { response } = await dialog.showMessageBox({
                     type: "warning",
@@ -707,7 +777,7 @@ if (gotTheLock) {
                   })
                   if (response === 1) {
                     abortAllClaudeSessions()
-                    abortAllCodexStreams()
+                    abortAllOpenAICompatibleStreams()
                     setIsQuitting(true)
                     app.quit()
                   }
@@ -779,7 +849,7 @@ if (gotTheLock) {
               click: () => {
                 const win = BrowserWindow.getFocusedWindow()
                 if (!win) return
-                if (hasActiveClaudeSessions() || hasActiveCodexStreams()) {
+                if (hasActiveClaudeSessions() || hasActiveOpenAICompatibleStreams()) {
                   dialog
                     .showMessageBox(win, {
                       type: "warning",
@@ -794,7 +864,7 @@ if (gotTheLock) {
                     .then(({ response }) => {
                       if (response === 1) {
                         abortAllClaudeSessions()
-                        abortAllCodexStreams()
+                        abortAllOpenAICompatibleStreams()
                         win.webContents.reloadIgnoringCache()
                       }
                     })
@@ -849,7 +919,7 @@ if (gotTheLock) {
           },
         },
       ])
-      app.dock.setMenu(dockMenu)
+      app.dock?.setMenu(dockMenu)
     }
 
     // Set update state and rebuild menu
@@ -945,7 +1015,7 @@ if (gotTheLock) {
       try {
         const results = await Promise.allSettled([
           getAllMcpConfigHandler(),
-          getAllCodexMcpConfigHandler(),
+          getAllOpenAICompatibleMcpConfigHandler(),
         ])
 
         if (results[0].status === "rejected") {
@@ -988,6 +1058,7 @@ if (gotTheLock) {
   // Cleanup before quit
   app.on("before-quit", async () => {
     console.log("[App] Shutting down...")
+    logger.app.warn("quit_requested")
     cancelAllPendingOAuth()
     await cleanupGitWatchers()
     await shutdownAnalytics()
@@ -997,9 +1068,17 @@ if (gotTheLock) {
   // Handle uncaught exceptions
   process.on("uncaughtException", (error) => {
     console.error("[App] Uncaught exception:", error)
+    logger.app.error("boot_failed", {
+      reason: error.message,
+      state: "uncaughtException",
+    })
   })
 
   process.on("unhandledRejection", (reason, promise) => {
     console.error("[App] Unhandled rejection at:", promise, "reason:", reason)
+    logger.app.error("boot_failed", {
+      reason: reason instanceof Error ? reason.message : String(reason),
+      state: "unhandledRejection",
+    })
   })
 }

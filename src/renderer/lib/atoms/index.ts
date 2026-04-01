@@ -189,6 +189,7 @@ export type SettingsTab =
   | "skills"
   | "agents"
   | "mcp"
+  | "logs"
   | "plugins"
   | "worktrees"
   | "projects"
@@ -582,7 +583,7 @@ export const systemLightThemeIdAtom = atomWithStorage<string>(
  */
 export const systemDarkThemeIdAtom = atomWithStorage<string>(
   "preferences:system-dark-theme-id",
-  "21st-dark", // Default dark theme
+  "code-king-dark", // Default dark theme
   undefined,
   { getOnInit: true },
 )
@@ -825,7 +826,7 @@ export function normalizeCodexApiKey(apiKey: string): string | null {
 // Models are shown by default; only hidden models are stored
 export const hiddenModelsAtom = atomWithStorage<string[]>(
   "preferences:hidden-models-v4",
-  ["gpt-5.1-codex-max", "gpt-5.1-codex-mini"],
+  [],
   undefined,
   { getOnInit: true },
 )
