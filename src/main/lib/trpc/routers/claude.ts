@@ -41,7 +41,7 @@ import {
 } from "../../mcp-auth"
 import { fetchOAuthMetadata, getMcpBaseUrl } from "../../oauth"
 import { discoverPluginMcpServers } from "../../plugins"
-import { logger } from "../../logger"
+import { logAgentEvent, logger } from "../../logger"
 import { publicProcedure, router } from "../index"
 import { buildAgentsOption } from "./agent-utils"
 import { resolveWorkspaceForChat } from "./chat-workspace"
@@ -889,6 +889,10 @@ export const claudeRouter = router({
         const streamStart = Date.now()
         let chunkCount = 0
         let lastChunkType = ""
+        let firstTokenLogged = false
+        let toolCalls = 0
+        let effectiveCwd = input.cwd
+        let effectiveProjectPath = input.projectPath || input.cwd
         // Shared sessionId for cleanup to save on abort
         let currentSessionId: string | null = null
         let sessionLoggedDone = false
@@ -940,11 +944,7 @@ export const claudeRouter = router({
             durationMs: Date.now() - streamStart,
             ...payload,
           }
-          if (event === "session_crashed") {
-            logger.agent.error(event, logPayload)
-            return
-          }
-          logger.agent.info(event, logPayload)
+          logAgentEvent(event, logPayload)
         }
 
         // Helper to emit error to frontend
@@ -964,7 +964,7 @@ export const claudeRouter = router({
             ...(process.env.NODE_ENV !== "production" && {
               debugInfo: {
                 context,
-                cwd: input.cwd,
+                cwd: effectiveCwd,
                 mode: input.mode,
                 PATH: process.env.PATH?.slice(0, 200),
               },
@@ -1029,6 +1029,56 @@ export const claudeRouter = router({
               ? lastAssistantMsg?.metadata?.sdkMessageUuid || null
               : null
             const historyEnabled = input.historyEnabled === true
+
+            const cwdCandidates = [
+              input.cwd,
+              input.cwd.trimEnd(),
+              input.projectPath,
+              input.projectPath?.trimEnd(),
+            ].filter((value, index, values): value is string =>
+              Boolean(value) && values.indexOf(value) === index,
+            )
+
+            let resolvedExistingDir: string | null = null
+            for (const candidate of cwdCandidates) {
+              try {
+                const stats = await fs.stat(candidate)
+                if (stats.isDirectory()) {
+                  resolvedExistingDir = candidate
+                  break
+                }
+              } catch {
+                // Try next candidate
+              }
+            }
+
+            if (!resolvedExistingDir) {
+              emitError(
+                new Error(
+                  `Workspace path not found: ${input.cwd}. Relink the workspace folder and try again.`,
+                ),
+                "Workspace folder missing",
+              )
+              safeEmit({ type: "finish" } as UIMessageChunk)
+              safeComplete()
+              return
+            }
+
+            effectiveCwd = resolvedExistingDir
+            effectiveProjectPath =
+              [input.projectPath, input.projectPath?.trimEnd(), resolvedExistingDir].find(
+                Boolean,
+              ) || resolvedExistingDir
+
+            if (effectiveCwd !== input.cwd) {
+              logger.session.warn("Resolved missing working directory", {
+                originalCwd: input.cwd,
+                resolvedCwd: effectiveCwd,
+                projectPath: input.projectPath || null,
+                chatId: input.chatId,
+                subChatId: input.subChatId,
+              })
+            }
 
             // Clear shouldForkResume flag after reading (consumed once) and persist to DB
             if (shouldForkResume) {
@@ -1165,7 +1215,7 @@ export const claudeRouter = router({
             // Build agents option for SDK (proper registration via options.agents)
             const agentsOption = await buildAgentsOption(
               agentMentions,
-              input.cwd,
+              effectiveCwd,
             )
 
             // Log if agents were mentioned
@@ -1384,7 +1434,7 @@ export const claudeRouter = router({
                 const stats = await fs.stat(claudeJsonSource).catch(() => null)
                 const currentMtime = stats?.mtimeMs ?? 0
                 const cached = mcpConfigCache.get(claudeJsonSource)
-                const lookupPath = input.projectPath || input.cwd
+                const lookupPath = effectiveProjectPath || effectiveCwd
 
                 // Get or refresh cached config
                 let claudeConfig: any
@@ -1558,7 +1608,7 @@ export const claudeRouter = router({
               input.sessionId || existingSessionId || undefined
 
             // DEBUG: Session resume path tracing
-            const expectedSanitizedCwd = input.cwd.replace(/[/.]/g, "-")
+            const expectedSanitizedCwd = effectiveCwd.replace(/[/.]/g, "-")
             const expectedSessionPath = path.join(
               isolatedConfigDir,
               "projects",
@@ -1567,7 +1617,7 @@ export const claudeRouter = router({
             )
             console.log(`[claude] ========== SESSION DEBUG ==========`)
             console.log(`[claude] subChatId: ${input.subChatId}`)
-            console.log(`[claude] cwd: ${input.cwd}`)
+            console.log(`[claude] cwd: ${effectiveCwd}`)
             console.log(
               `[claude] sanitized cwd (expected): ${expectedSanitizedCwd}`,
             )
@@ -1586,7 +1636,7 @@ export const claudeRouter = router({
             console.log(`[claude] ========== END SESSION DEBUG ==========`)
 
             console.log(
-              `[SD] Query options - cwd: ${input.cwd}, projectPath: ${input.projectPath || "(not set)"}, mcpServers: ${mcpServersForSdk ? Object.keys(mcpServersForSdk).join(", ") : "(none)"}`,
+              `[SD] Query options - cwd: ${effectiveCwd}, projectPath: ${effectiveProjectPath || "(not set)"}, mcpServers: ${mcpServersForSdk ? Object.keys(mcpServersForSdk).join(", ") : "(none)"}`,
             )
             if (finalCustomConfig) {
               const redactedConfig = {
@@ -1605,6 +1655,17 @@ export const claudeRouter = router({
             }
 
             const resolvedModel = finalCustomConfig?.model || input.model
+            logger.agent.info("Agent session starting", {
+              chatId: input.chatId,
+              subChatId: input.subChatId,
+              projectPath: effectiveProjectPath || effectiveCwd,
+              model: resolvedModel || finalEnv.ANTHROPIC_DEFAULT_SONNET_MODEL,
+              worktree: Boolean(effectiveProjectPath && effectiveProjectPath !== effectiveCwd),
+            })
+            logger.perf.info("Claude binary spawning", {
+              executablePath: claudeBinaryPath,
+              chatId: input.chatId,
+            })
 
             // DEBUG: If using Ollama, test if it's actually responding
             if (isUsingOllama && finalCustomConfig) {
@@ -1666,7 +1727,7 @@ export const claudeRouter = router({
                 mcpServersForSdk &&
                 Object.keys(mcpServersForSdk).length > 0
               ) {
-                const lookupPath = input.projectPath || input.cwd
+                const lookupPath = effectiveProjectPath || effectiveCwd
                 mcpServersFiltered = await ensureMcpTokensFresh(
                   mcpServersForSdk,
                   lookupPath,
@@ -1681,7 +1742,7 @@ export const claudeRouter = router({
               console.log("[Ollama Debug] SDK Configuration:", {
                 model: resolvedModel,
                 baseUrl: finalEnv.ANTHROPIC_BASE_URL,
-                cwd: input.cwd,
+                cwd: effectiveCwd,
                 configDir: isolatedConfigDir,
                 hasAuthToken: !!finalEnv.ANTHROPIC_AUTH_TOKEN,
                 tokenPreview:
@@ -1699,7 +1760,7 @@ export const claudeRouter = router({
             // Read AGENTS.md from project root if it exists
             let agentsMdContent: string | undefined
             try {
-              const agentsMdPath = path.join(input.cwd, "AGENTS.md")
+              const agentsMdPath = path.join(effectiveCwd, "AGENTS.md")
               agentsMdContent = await fs.readFile(agentsMdPath, "utf-8")
               if (agentsMdContent.trim()) {
                 console.log(
@@ -1812,8 +1873,8 @@ ${history}
 
               const ollamaContext = `[CONTEXT]
 You are a coding assistant in OFFLINE mode (Ollama model: ${resolvedModel || "unknown"}).
-Project: ${input.projectPath || input.cwd}
-Working directory: ${input.cwd}
+Project: ${effectiveProjectPath || effectiveCwd}
+Working directory: ${effectiveCwd}
 
 IMPORTANT: When using tools, use these EXACT parameter names:
 - Read: use "file_path" (not "file")
@@ -1859,7 +1920,7 @@ ${prompt}
               prompt: finalQueryPrompt,
               options: {
                 abortController, // Must be inside options!
-                cwd: input.cwd,
+                cwd: effectiveCwd,
                 systemPrompt: systemPromptConfig,
                 // Register mentioned agents with SDK via options.agents (skip for Ollama - not supported)
                 ...(!isUsingOllama &&
@@ -2254,7 +2315,7 @@ ${prompt}
                       `[CLAUDE SDK ERROR] SubChat ID: ${input.subChatId}`,
                     )
                     console.error(`[CLAUDE SDK ERROR] Chat ID: ${input.chatId}`)
-                    console.error(`[CLAUDE SDK ERROR] CWD: ${input.cwd}`)
+                    console.error(`[CLAUDE SDK ERROR] CWD: ${effectiveCwd}`)
                     console.error(`[CLAUDE SDK ERROR] Mode: ${input.mode}`)
                     console.error(
                       `[CLAUDE SDK ERROR] Session ID: ${msgAny.session_id || "none"}`,
@@ -2696,7 +2757,7 @@ ${prompt}
                       },
                       extra: {
                         context: errorContext,
-                        cwd: input.cwd,
+                        cwd: effectiveCwd,
                         stderr: stderrOutput || "(no stderr captured)",
                         chatId: input.chatId,
                         subChatId: input.subChatId,
@@ -2717,7 +2778,7 @@ ${prompt}
                     debugInfo: {
                       context: errorContext,
                       category: errorCategory,
-                      cwd: input.cwd,
+                      cwd: effectiveCwd,
                       mode: input.mode,
                       stderr: stderrOutput || "(no stderr captured)",
                     },
@@ -2761,9 +2822,9 @@ ${prompt}
                     .run()
 
                   // Create snapshot stash for rollback support (on error)
-                  if (historyEnabled && metadata.sdkMessageUuid && input.cwd) {
+                  if (historyEnabled && metadata.sdkMessageUuid && effectiveCwd) {
                     await createRollbackStash(
-                      input.cwd,
+                      effectiveCwd,
                       metadata.sdkMessageUuid,
                     )
                   }
@@ -2855,8 +2916,8 @@ ${prompt}
               .run()
 
             // Create snapshot stash for rollback support
-            if (historyEnabled && metadata.sdkMessageUuid && input.cwd) {
-              await createRollbackStash(input.cwd, metadata.sdkMessageUuid)
+            if (historyEnabled && metadata.sdkMessageUuid && effectiveCwd) {
+              await createRollbackStash(effectiveCwd, metadata.sdkMessageUuid)
             }
 
             const duration = ((Date.now() - streamStart) / 1000).toFixed(1)

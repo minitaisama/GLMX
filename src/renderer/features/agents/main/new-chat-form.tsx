@@ -2121,6 +2121,7 @@ export function NewChatForm({
                                         setSelectedBranch(branch.name, branch.type)
                                         setBranchPopoverOpen(false)
                                         setBranchSearch("")
+                                        toast.success(`Branch set to ${branch.name}`, { duration: 1500 })
                                       }}
                                       className={cn(
                                         "flex items-center gap-1.5 w-[calc(100%-8px)] mx-1 px-1.5 text-sm text-left absolute left-0 top-0 rounded-md cursor-default select-none outline-none transition-colors",

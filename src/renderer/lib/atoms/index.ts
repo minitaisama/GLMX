@@ -583,7 +583,7 @@ export const systemLightThemeIdAtom = atomWithStorage<string>(
  */
 export const systemDarkThemeIdAtom = atomWithStorage<string>(
   "preferences:system-dark-theme-id",
-  "21st-dark", // Default dark theme
+  "code-king-dark", // Default dark theme
   undefined,
   { getOnInit: true },
 )
