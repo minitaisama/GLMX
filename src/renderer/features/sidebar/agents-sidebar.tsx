@@ -135,6 +135,7 @@ import {
   TrafficLights,
 } from "../agents/components/traffic-light-spacer"
 import { useHotkeys } from "react-hotkeys-hook"
+import { useShallow } from "zustand/react/shallow"
 import { Checkbox } from "../../components/ui/checkbox"
 import { useHaptic } from "./hooks/use-haptic"
 import { TypewriterText } from "../../components/ui/typewriter-text"
@@ -2092,12 +2093,14 @@ export function AgentsSidebar({
     activeSubChatId,
     openSubChatIds,
     allSubChats,
-  } = useAgentSubChatStore((state) => ({
-    chatId: state.chatId,
-    activeSubChatId: state.activeSubChatId,
-    openSubChatIds: state.openSubChatIds,
-    allSubChats: state.allSubChats,
-  }))
+  } = useAgentSubChatStore(
+    useShallow((state) => ({
+      chatId: state.chatId,
+      activeSubChatId: state.activeSubChatId,
+      openSubChatIds: state.openSubChatIds,
+      allSubChats: state.allSubChats,
+    })),
+  )
 
   // Restore chat mutation (for undo)
   const restoreChatMutation = trpc.chats.restore.useMutation({
@@ -2187,54 +2190,39 @@ export function AgentsSidebar({
   // Cmd+Z to undo archive (supports multiple undos for workspaces AND sub-chats)
   const undoHotkeyHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {})
 
-  useEffect(() => {
-    undoHotkeyHandlerRef.current = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "z" && undoStack.length > 0) {
-        e.preventDefault()
-        // Get the most recent item
-        const lastItem = undoStack[undoStack.length - 1]
-        if (!lastItem) return
+  undoHotkeyHandlerRef.current = (e: KeyboardEvent) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "z" && undoStack.length > 0) {
+      e.preventDefault()
+      const lastItem = undoStack[undoStack.length - 1]
+      if (!lastItem) return
 
-        // Clear timeout and remove from stack
-        clearTimeout(lastItem.timeoutId)
-        setUndoStack((prev) => prev.slice(0, -1))
+      clearTimeout(lastItem.timeoutId)
+      setUndoStack((prev) => prev.slice(0, -1))
 
-        if (lastItem.type === "workspace") {
-          // Restore workspace from archive
-          if (lastItem.isRemote) {
-            // Strip remote_ prefix before calling API (stored with prefix for undo stack identification)
-            const originalId = lastItem.chatId.replace(/^remote_/, '')
-            restoreRemoteChatMutation.mutate(originalId, {
-              onSuccess: () => {
-                setSelectedChatId(originalId)
-                setSelectedChatIsRemote(true)
-                setChatSourceMode("sandbox")
-              },
-              onError: (error) => {
-                console.error('[handleUndo] Failed to restore remote workspace:', error)
-                toast.error("Failed to restore workspace")
-              },
-            })
-          } else {
-            restoreChatMutation.mutate({ id: lastItem.chatId })
-          }
-        } else if (lastItem.type === "subchat") {
-          // Restore sub-chat tab (re-add to open tabs)
-          const store = useAgentSubChatStore.getState()
-          store.addToOpenSubChats(lastItem.subChatId)
-          store.setActiveSubChat(lastItem.subChatId)
+      if (lastItem.type === "workspace") {
+        if (lastItem.isRemote) {
+          const originalId = lastItem.chatId.replace(/^remote_/, "")
+          restoreRemoteChatMutation.mutate(originalId, {
+            onSuccess: () => {
+              setSelectedChatId(originalId)
+              setSelectedChatIsRemote(true)
+              setChatSourceMode("sandbox")
+            },
+            onError: (error) => {
+              console.error("[handleUndo] Failed to restore remote workspace:", error)
+              toast.error("Failed to restore workspace")
+            },
+          })
+        } else {
+          restoreChatMutation.mutate({ id: lastItem.chatId })
         }
+      } else if (lastItem.type === "subchat") {
+        const store = useAgentSubChatStore.getState()
+        store.addToOpenSubChats(lastItem.subChatId)
+        store.setActiveSubChat(lastItem.subChatId)
       }
     }
-  }, [
-    undoStack,
-    setUndoStack,
-    restoreChatMutation,
-    restoreRemoteChatMutation,
-    setSelectedChatId,
-    setSelectedChatIsRemote,
-    setChatSourceMode,
-  ])
+  }
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => undoHotkeyHandlerRef.current(e)

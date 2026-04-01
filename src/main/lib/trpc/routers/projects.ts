@@ -16,6 +16,13 @@ import { trimProjectRecordPaths } from "./chat-workspace"
 
 const execAsync = promisify(exec)
 
+function withPathExists<T extends { path: string }>(project: T) {
+  return {
+    ...project,
+    pathExists: existsSync(project.path.trim()),
+  }
+}
+
 export const projectsRouter = router({
   /**
    * Get launch directory from CLI args (consumed once)
@@ -31,7 +38,12 @@ export const projectsRouter = router({
   list: publicProcedure.query(() => {
     trimProjectRecordPaths()
     const db = getDatabase()
-    return db.select().from(projects).orderBy(desc(projects.updatedAt)).all()
+    return db
+      .select()
+      .from(projects)
+      .orderBy(desc(projects.updatedAt))
+      .all()
+      .map(withPathExists)
   }),
 
   /**
@@ -42,7 +54,8 @@ export const projectsRouter = router({
     .query(({ input }) => {
       trimProjectRecordPaths()
       const db = getDatabase()
-      return db.select().from(projects).where(eq(projects.id, input.id)).get()
+      const project = db.select().from(projects).where(eq(projects.id, input.id)).get()
+      return project ? withPathExists(project) : null
     }),
 
   /**
