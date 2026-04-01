@@ -12,7 +12,11 @@ import {
   subChatCodexModelIdAtomFamily,
   subChatCodexThinkingAtomFamily,
 } from "../atoms"
-import { CODEX_MODELS, type CodexThinkingLevel } from "./models"
+import {
+  CODEX_MODELS,
+  normalizeOpenAICompatibleModelId,
+  type CodexThinkingLevel,
+} from "./models"
 import { useAgentSubChatStore } from "../stores/sub-chat-store"
 import type { AgentMessageMetadata } from "../ui/agent-message-usage"
 
@@ -35,7 +39,7 @@ type ImageAttachment = {
 
 // When a sub-chat hits auth-error, force one fresh Codex ACP session on next send.
 const forceFreshSessionSubChats = new Set<string>()
-const DEFAULT_CODEX_MODEL = "gpt-5.3-codex/high"
+const DEFAULT_CODEX_MODEL = "standard/high"
 function getStoredCodexCredentials(): {
   hasApiKey: boolean
   hasSubscription: boolean
@@ -74,11 +78,13 @@ async function resolveCodexCredentialsForAuthError(): Promise<{
 }
 
 function getSelectedCodexModel(subChatId: string): string {
-  const selectedModelId = appStore.get(subChatCodexModelIdAtomFamily(subChatId))
+  const selectedModelId = normalizeOpenAICompatibleModelId(
+    appStore.get(subChatCodexModelIdAtomFamily(subChatId)),
+  )
   const selectedThinking = appStore.get(subChatCodexThinkingAtomFamily(subChatId))
   const selectedModel =
     CODEX_MODELS.find((model) => model.id === selectedModelId) ||
-    CODEX_MODELS.find((model) => model.id === "gpt-5.3-codex") ||
+    CODEX_MODELS.find((model) => model.id === "standard") ||
     CODEX_MODELS[0]
 
   if (!selectedModel) {

@@ -389,7 +389,7 @@ const claudeModels = [
 const agents = [
   { id: "claude-code", name: "Anthropic-Compatible", hasModels: true },
   { id: "cursor", name: "Cursor CLI", disabled: true },
-  { id: "codex", name: "OpenAI-Compatible", disabled: true },
+  { id: "codex", name: "OpenAI-Compatible", disabled: !ENABLE_CODEX_PROVIDER },
 ]
 
 // Helper function to get agent icon

@@ -119,6 +119,8 @@ import {
   CLAUDE_MODELS,
   CODEX_MODELS,
   ENABLE_CODEX_PROVIDER,
+  getOpenAICompatibleSlotModelName,
+  normalizeOpenAICompatibleModelId,
   type CodexThinkingLevel,
 } from "../lib/models"
 // import type { PlanType } from "@/lib/config/subscription-plans"
@@ -374,17 +376,15 @@ export function NewChatForm({
 
   const hiddenModels = useAtomValue(hiddenModelsAtom)
   const codexUiModels = useMemo(
-    () => {
-      let models = isOpenAITransportConnected
-        ? CODEX_MODELS.filter((model) => model.id !== "gpt-5.3-codex")
-        : CODEX_MODELS
-      return models.filter((model) => !hiddenModels.includes(model.id))
-    },
-    [hiddenModels, isOpenAITransportConnected],
+    () => CODEX_MODELS.filter((model) => !hiddenModels.includes(model.id)),
+    [hiddenModels],
   )
   const selectedCodexModel = useMemo(
     () =>
-      codexUiModels.find((model) => model.id === lastSelectedCodexModelId) ||
+      codexUiModels.find(
+        (model) =>
+          model.id === normalizeOpenAICompatibleModelId(lastSelectedCodexModelId),
+      ) ||
       codexUiModels[0] ||
       CODEX_MODELS[0]!,
     [codexUiModels, lastSelectedCodexModelId],
@@ -441,7 +441,10 @@ export function NewChatForm({
     enabledAgents.find((agent) => agent.id === "claude-code") || fallbackAgent
   const selectedModelLabel = useMemo(() => {
     if (selectedAgent.id === "codex") {
-      return selectedCodexModel.name
+      return `${selectedCodexModel.name} · ${getOpenAICompatibleSlotModelName(
+        selectedCodexModel.id,
+        activeProvider?.models,
+      )}`
     }
 
     if (availableModels.isOffline && availableModels.hasOllama) {
@@ -459,7 +462,9 @@ export function NewChatForm({
     return `${selectedModel.name} ${selectedModel.version}`
   }, [
     selectedAgent.id,
+    activeProvider?.models,
     selectedCodexModel.name,
+    selectedCodexModel.id,
     availableModels.isOffline,
     availableModels.hasOllama,
     currentOllamaModel,

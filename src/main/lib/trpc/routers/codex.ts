@@ -5,7 +5,7 @@ import { eq } from "drizzle-orm"
 import { app } from "electron"
 import { spawn, type ChildProcess } from "node:child_process"
 import { createHash } from "node:crypto"
-import { existsSync } from "node:fs"
+import { existsSync, mkdirSync } from "node:fs"
 import { createServer, request as httpRequest, type Server } from "node:http"
 import { readdir, readFile } from "node:fs/promises"
 import { request as httpsRequest } from "node:https"
@@ -45,6 +45,7 @@ type CodexProviderSession = {
   authFingerprint: string | null
   mcpFingerprint: string
   providerFingerprint: string
+  requestedModelId: string
 }
 
 type CodexLoginSessionState =
@@ -147,7 +148,7 @@ const AUTH_HINTS = [
   "401",
   "403",
 ]
-const DEFAULT_CODEX_MODEL = "gpt-5.3-codex/high"
+const DEFAULT_CODEX_MODEL = "standard/high"
 const CODEX_MCP_TOOLS_FETCH_TIMEOUT_MS = 40_000
 const CODEX_USAGE_POLL_ATTEMPTS = 3
 const CODEX_USAGE_POLL_INTERVAL_MS = 200
@@ -1111,16 +1112,28 @@ function extractCodexModelId(rawModel: unknown): string | undefined {
 
 function resolvePresetModel(modelId: string, preset: ProviderPreset): string {
   const normalizedModel = modelId.trim().toLowerCase()
+  const [baseModel] = normalizedModel.split("/")
 
-  if (normalizedModel.includes("mini") || normalizedModel.includes("fast")) {
+  if (baseModel === "heavy") {
+    return preset.models.heavy
+  }
+
+  if (baseModel === "standard") {
+    return preset.models.standard
+  }
+
+  if (baseModel === "fast") {
+    return preset.models.fast
+  }
+
+  if (baseModel.includes("mini") || baseModel.includes("fast")) {
     return preset.models.fast
   }
 
   if (
-    normalizedModel.includes("5.3") ||
-    normalizedModel.includes("max") ||
-    normalizedModel.includes("xhigh") ||
-    normalizedModel.includes("high")
+    baseModel.includes("5.3") ||
+    baseModel.includes("max") ||
+    baseModel.includes("xhigh")
   ) {
     return preset.models.heavy
   }
@@ -1166,35 +1179,126 @@ async function ensureProviderBaseUrl(preset: ProviderPreset): Promise<string> {
   }
 
   const targetUrl = new URL(preset.baseUrl)
+  const targetPathPrefix = targetUrl.pathname.replace(/\/$/, "")
   const server = createServer((incomingReq, incomingRes) => {
     const requestImpl = targetUrl.protocol === "https:" ? httpsRequest : httpRequest
-    const forwardedHeaders = {
-      ...incomingReq.headers,
-      ...preset.defaultHeaders,
-      host: targetUrl.host,
+    const requestUrl = new URL(incomingReq.url || "/", "http://127.0.0.1")
+    const pathSegments = requestUrl.pathname.split("/").filter(Boolean)
+    const hasModelHintPrefix = pathSegments[0] === "glmx" && pathSegments.length >= 2
+    const modelHint = hasModelHintPrefix
+      ? decodeURIComponent(pathSegments[1] || "")
+      : undefined
+    const rewrittenPathname = hasModelHintPrefix
+      ? `/${pathSegments.slice(2).join("/")}`
+      : requestUrl.pathname
+    const incomingPath = `${rewrittenPathname || "/"}${requestUrl.search || ""}`
+    const pathOnly = rewrittenPathname || "/"
+
+    const forwardRequest = (bodyBuffer?: Buffer) => {
+      const upstreamPath = targetPathPrefix
+        ? `${targetPathPrefix}${incomingPath.startsWith("/") ? incomingPath : `/${incomingPath}`}`
+        : incomingPath
+      const forwardedHeaders = {
+        ...incomingReq.headers,
+        ...preset.defaultHeaders,
+        host: targetUrl.host,
+      }
+
+      if (bodyBuffer) {
+        forwardedHeaders["content-length"] = String(bodyBuffer.length)
+      }
+
+      const upstreamReq = requestImpl(
+        {
+          protocol: targetUrl.protocol,
+          hostname: targetUrl.hostname,
+          port: targetUrl.port || undefined,
+          method: incomingReq.method,
+          path: upstreamPath,
+          headers: forwardedHeaders,
+        },
+        (upstreamRes) => {
+          if (pathOnly === "/models") {
+            const chunks: Buffer[] = []
+            upstreamRes.on("data", (chunk) => {
+              chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+            })
+            upstreamRes.on("end", () => {
+              try {
+                const rawBody = Buffer.concat(chunks).toString("utf8")
+                const parsed = JSON.parse(rawBody) as {
+                  data?: Array<{ id?: string }>
+                }
+                const data = Array.isArray(parsed.data) ? parsed.data : []
+                const transformed = {
+                  models: data
+                    .map((model) => ({
+                      id: typeof model.id === "string" ? model.id : "",
+                      name: typeof model.id === "string" ? model.id : "",
+                      label: typeof model.id === "string" ? model.id : "",
+                    }))
+                    .filter((model) => model.id.length > 0),
+                  currentModelId: null,
+                }
+
+                incomingRes.writeHead(upstreamRes.statusCode || 502, {
+                  ...upstreamRes.headers,
+                  "content-type": "application/json; charset=utf-8",
+                })
+                incomingRes.end(JSON.stringify(transformed))
+              } catch {
+                incomingRes.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers)
+                incomingRes.end(Buffer.concat(chunks))
+              }
+            })
+            return
+          }
+
+          incomingRes.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers)
+          upstreamRes.pipe(incomingRes)
+        },
+      )
+
+      upstreamReq.on("error", (error) => {
+        incomingRes.writeHead(502, { "content-type": "text/plain; charset=utf-8" })
+        incomingRes.end(`Proxy request failed: ${error.message}`)
+      })
+
+      if (bodyBuffer) {
+        upstreamReq.end(bodyBuffer)
+        return
+      }
+
+      incomingReq.pipe(upstreamReq)
     }
 
-    const upstreamReq = requestImpl(
-      {
-        protocol: targetUrl.protocol,
-        hostname: targetUrl.hostname,
-        port: targetUrl.port || undefined,
-        method: incomingReq.method,
-        path: incomingReq.url || "/",
-        headers: forwardedHeaders,
-      },
-      (upstreamRes) => {
-        incomingRes.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers)
-        upstreamRes.pipe(incomingRes)
-      },
-    )
+    if (
+      modelHint &&
+      (pathOnly === "/responses" || pathOnly === "/chat/completions") &&
+      incomingReq.method &&
+      ["POST", "PUT", "PATCH"].includes(incomingReq.method.toUpperCase())
+    ) {
+      const requestChunks: Buffer[] = []
+      incomingReq.on("data", (chunk) => {
+        requestChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+      })
+      incomingReq.on("end", () => {
+        const rawBody = Buffer.concat(requestChunks).toString("utf8")
+        try {
+          const parsed = JSON.parse(rawBody) as Record<string, unknown>
+          parsed.model = preprocessCodexModelName({
+            modelId: modelHint,
+            preset,
+          })
+          forwardRequest(Buffer.from(JSON.stringify(parsed), "utf8"))
+        } catch {
+          forwardRequest(Buffer.concat(requestChunks))
+        }
+      })
+      return
+    }
 
-    upstreamReq.on("error", (error) => {
-      incomingRes.writeHead(502, { "content-type": "text/plain; charset=utf-8" })
-      incomingRes.end(`Proxy request failed: ${error.message}`)
-    })
-
-    incomingReq.pipe(upstreamReq)
+    forwardRequest()
   })
 
   const port = await new Promise<number>((resolve, reject) => {
@@ -1218,17 +1322,22 @@ async function resolveCodexProviderConfig(): Promise<{
   preset: ProviderPreset
   apiKey: string | null
   baseUrl: string
+  isProxyBaseUrl: boolean
   authFingerprint: string | null
   providerFingerprint: string
 }> {
   const preset = getActiveProvider()
   const apiKey = getProviderApiKey(preset.id)
+  const isProxyBaseUrl = Boolean(
+    preset.defaultHeaders && Object.keys(preset.defaultHeaders).length > 0,
+  )
   const baseUrl = await ensureProviderBaseUrl(preset)
 
   return {
     preset,
     apiKey,
     baseUrl,
+    isProxyBaseUrl,
     authFingerprint: getAuthFingerprint(apiKey),
     providerFingerprint: getProviderFingerprint(preset),
   }
@@ -1237,6 +1346,9 @@ async function resolveCodexProviderConfig(): Promise<{
 function buildCodexProviderEnv(params: {
   apiKey: string | null
   baseUrl: string
+  requestedModelId: string
+  isProxyBaseUrl: boolean
+  codexHome: string
 }): Record<string, string> {
   const env: Record<string, string> = {}
 
@@ -1253,10 +1365,16 @@ function buildCodexProviderEnv(params: {
     }
   }
 
+  const baseUrlWithHint = params.isProxyBaseUrl
+    ? `${params.baseUrl.replace(/\/$/, "")}/glmx/${encodeURIComponent(params.requestedModelId)}`
+    : params.baseUrl
+
   return {
     ...env,
+    HOME: dirname(params.codexHome),
+    CODEX_HOME: params.codexHome,
     OPENAI_API_KEY: params.apiKey ?? "",
-    OPENAI_BASE_URL: params.baseUrl,
+    OPENAI_BASE_URL: baseUrlWithHint,
   }
 }
 
@@ -1336,6 +1454,7 @@ async function getOrCreateProvider(params: {
   cwd: string
   mcpServers: CodexMcpServerForSession[]
   mcpFingerprint: string
+  requestedModelId: string
   existingSessionId?: string
   authConfig?: {
     apiKey: string
@@ -1352,7 +1471,8 @@ async function getOrCreateProvider(params: {
     existing.cwd === params.cwd &&
     existing.authFingerprint === authFingerprint &&
     existing.mcpFingerprint === params.mcpFingerprint &&
-    existing.providerFingerprint === providerConfig.providerFingerprint
+    existing.providerFingerprint === providerConfig.providerFingerprint &&
+    existing.requestedModelId === params.requestedModelId
   ) {
     return existing.provider
   }
@@ -1369,11 +1489,21 @@ async function getOrCreateProvider(params: {
     ? undefined
     : params.existingSessionId
 
+  const codexHome = join(
+    app.getPath("userData"),
+    "codex-provider-state",
+    inputSafePathSegment(params.subChatId),
+  )
+  mkdirSync(codexHome, { recursive: true })
+
   const provider = createACPProvider({
     command: resolveCodexAcpBinaryPath(),
     env: buildCodexProviderEnv({
       apiKey,
       baseUrl: providerConfig.baseUrl,
+      requestedModelId: params.requestedModelId,
+      isProxyBaseUrl: providerConfig.isProxyBaseUrl,
+      codexHome,
     }),
     authMethodId: getCodexAuthMethodId(apiKey),
     session: {
@@ -1392,9 +1522,15 @@ async function getOrCreateProvider(params: {
     authFingerprint,
     mcpFingerprint: params.mcpFingerprint,
     providerFingerprint: providerConfig.providerFingerprint,
+    requestedModelId: params.requestedModelId,
   })
 
   return provider
+}
+
+function inputSafePathSegment(value: string): string {
+  const normalized = value.trim().replace(/[^a-zA-Z0-9._-]+/g, "-")
+  return normalized.length > 0 ? normalized : "default"
 }
 
 function cleanupProvider(subChatId: string): void {
@@ -1826,6 +1962,7 @@ export const codexRouter = router({
               cwd: input.cwd,
               mcpServers: mcpSnapshot.mcpServersForSession,
               mcpFingerprint: mcpSnapshot.fingerprint,
+              requestedModelId,
               existingSessionId:
                 input.forceNewSession
                   ? undefined

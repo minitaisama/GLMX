@@ -76,6 +76,8 @@ import {
   CLAUDE_MODELS,
   CODEX_MODELS,
   ENABLE_CODEX_PROVIDER,
+  getOpenAICompatibleSlotModelName,
+  normalizeOpenAICompatibleModelId,
   type CodexThinkingLevel,
 } from "../lib/models"
 import type { DiffTextContext, SelectedTextContext } from "../lib/queue-utils"
@@ -410,6 +412,9 @@ export const ChatInputArea = memo(function ChatInputArea({
   onContinueWithProvider,
   isActive = true,
 }: ChatInputAreaProps) {
+  const providerForModelUi =
+    ENABLE_CODEX_PROVIDER && provider === "codex" ? "codex" : "claude-code"
+
   // Local state - changes here don't re-render parent
   const [hasContent, setHasContent] = useState(false)
   const [isFocused, setIsFocused] = useState(false)
@@ -510,17 +515,15 @@ export const ChatInputArea = memo(function ChatInputArea({
   const isOpenAITransportConnected =
     codexIntegration?.state === "connected_api_key"
   const codexUiModels = useMemo(
-    () => {
-      let models = isOpenAITransportConnected
-        ? CODEX_MODELS.filter((model) => model.id !== "gpt-5.3-codex")
-        : CODEX_MODELS
-      return models.filter((model) => !hiddenModels.includes(model.id))
-    },
-    [hiddenModels, isOpenAITransportConnected],
+    () => CODEX_MODELS.filter((model) => !hiddenModels.includes(model.id)),
+    [hiddenModels],
   )
   const selectedCodexModel = useMemo(
     () =>
-      codexUiModels.find((model) => model.id === selectedSubChatCodexModelId) ||
+      codexUiModels.find(
+        (model) =>
+          model.id === normalizeOpenAICompatibleModelId(selectedSubChatCodexModelId),
+      ) ||
       codexUiModels[0] ||
       CODEX_MODELS[0]!,
     [codexUiModels, selectedSubChatCodexModelId],
@@ -599,8 +602,11 @@ export const ChatInputArea = memo(function ChatInputArea({
   const [thinkingEnabled, setThinkingEnabled] = useAtom(extendedThinkingEnabledAtom)
 
   const selectedModelLabel = useMemo(() => {
-    if (provider === "codex") {
-      return selectedCodexModel.name
+    if (providerForModelUi === "codex") {
+      return `${selectedCodexModel.name} · ${getOpenAICompatibleSlotModelName(
+        selectedCodexModel.id,
+        activeProvider?.models,
+      )}`
     }
 
     if (availableModels.isOffline && availableModels.hasOllama) {
@@ -617,8 +623,10 @@ export const ChatInputArea = memo(function ChatInputArea({
 
     return `${selectedModel.name} ${selectedModel.version}`
   }, [
-    provider,
+    providerForModelUi,
+    selectedCodexModel.id,
     selectedCodexModel.name,
+    activeProvider?.models,
     availableModels.isOffline,
     availableModels.hasOllama,
     currentOllamaModel,
@@ -1547,10 +1555,10 @@ export const ChatInputArea = memo(function ChatInputArea({
                     <AgentModelSelector
                       open={isModelDropdownOpen}
                       onOpenChange={setIsModelDropdownOpen}
-                      selectedAgentId={provider}
+                      selectedAgentId={providerForModelUi}
                       onSelectedAgentIdChange={(nextProvider) => {
                         if (!canSwitchProvider) return
-                        if (nextProvider === provider) return
+                        if (nextProvider === providerForModelUi) return
                         onProviderChange?.(nextProvider)
                       }}
                       allowProviderSwitch={canSwitchProvider}
