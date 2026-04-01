@@ -1,9 +1,8 @@
 "use client"
 
-import { memo, useState, useEffect, useRef } from "react"
-import { ChevronRight } from "lucide-react"
+import { memo, useState, useEffect, useRef, useMemo } from "react"
+import { ChevronRight, Loader2 } from "lucide-react"
 import { cn } from "../../../lib/utils"
-import { ChatMarkdownRenderer } from "../../../components/chat-markdown-renderer"
 import { TextShimmer } from "../../../components/ui/text-shimmer"
 import { AgentToolInterrupted } from "./agent-tool-interrupted"
 import { areToolPropsEqual } from "./agent-tool-utils"
@@ -26,6 +25,24 @@ interface AgentThinkingToolProps {
 }
 
 const PREVIEW_LENGTH = 60
+const MAX_VISIBLE_LINES = 8
+const LINE_HEIGHT_PX = 22
+
+function cleanLine(line: string): string {
+  return line.replace(/\s+/g, " ").trim()
+}
+
+function normalizeThinkingLines(text: string): string[] {
+  return text
+    .split("\n")
+    .map(cleanLine)
+    .filter(Boolean)
+}
+
+function truncateText(value: string, max = 88): string {
+  if (value.length <= max) return value
+  return `${value.slice(0, max - 1)}…`
+}
 
 function formatElapsedTime(ms: number): string {
   if (ms < 1000) return ""
@@ -85,8 +102,20 @@ export const AgentThinkingTool = memo(function AgentThinkingTool({
   }, [part.input?.text, isStreaming, isExpanded])
 
   const thinkingText = part.input?.text || ""
+  const reasoningLines = useMemo(
+    () => normalizeThinkingLines(thinkingText),
+    [thinkingText],
+  )
+  const latestVisibleLines = useMemo(() => {
+    if (reasoningLines.length <= MAX_VISIBLE_LINES) return reasoningLines
+    return reasoningLines.slice(-MAX_VISIBLE_LINES)
+  }, [reasoningLines])
 
-  const previewText = thinkingText.slice(0, PREVIEW_LENGTH).replace(/\n/g, " ")
+  const previewSource = reasoningLines[0] || thinkingText
+  const previewText = truncateText(
+    previewSource.slice(0, PREVIEW_LENGTH).replace(/\n/g, " "),
+    PREVIEW_LENGTH,
+  )
 
   const elapsedDisplay = isStreaming ? formatElapsedTime(elapsedMs) : ""
 
@@ -141,7 +170,7 @@ export const AgentThinkingTool = memo(function AgentThinkingTool({
       </div>
 
       {/* Content - expanded while streaming, collapsible after */}
-      {isExpanded && thinkingText && (
+      {isExpanded && reasoningLines.length > 0 && (
         <div className="relative mt-1">
           {/* Top gradient fade when streaming */}
           <div
@@ -153,11 +182,30 @@ export const AgentThinkingTool = memo(function AgentThinkingTool({
           <div
             ref={scrollRef}
             className={cn(
-              "px-2",
-              isStreaming && "overflow-y-auto scrollbar-hide max-h-36",
+              "px-2 space-y-1",
+              reasoningLines.length > MAX_VISIBLE_LINES &&
+                "overflow-y-auto scrollbar-hide",
             )}
+            style={
+              reasoningLines.length > MAX_VISIBLE_LINES
+                ? { maxHeight: `${MAX_VISIBLE_LINES * LINE_HEIGHT_PX}px` }
+                : undefined
+            }
           >
-            <ChatMarkdownRenderer content={thinkingText} size="sm" isStreaming={isStreaming} />
+            {latestVisibleLines.map((line, idx) => (
+              <div
+                key={`${idx}-${line.slice(0, 20)}`}
+                className="flex items-center gap-2 text-xs text-muted-foreground"
+                title={line}
+              >
+                {isStreaming && idx === latestVisibleLines.length - 1 ? (
+                  <Loader2 className="h-3 w-3 shrink-0 animate-spin text-muted-foreground/70" />
+                ) : (
+                  <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/50 shrink-0" />
+                )}
+                <span className="truncate">{truncateText(line, 140)}</span>
+              </div>
+            ))}
           </div>
         </div>
       )}
