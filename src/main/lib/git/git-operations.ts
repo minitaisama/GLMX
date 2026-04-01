@@ -2,6 +2,7 @@ import { shell } from "electron";
 import simpleGit from "simple-git";
 import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
+import { logger } from "../logger";
 import { isUpstreamMissingError } from "./git-utils";
 import { assertRegisteredWorktree } from "./security";
 import { fetchGitHubPRStatus } from "./github";
@@ -38,6 +39,37 @@ function invalidateGitStateCaches(worktreePath: string): void {
 	gitCache.invalidateAllFileContents(worktreePath);
 }
 
+async function runLoggedGitOperation<T>(
+	command: string,
+	worktreePath: string,
+	execute: () => Promise<T>,
+	metadata?: Record<string, unknown>,
+): Promise<T> {
+	const start = Date.now();
+	logger.git.info("Git operation", {
+		command,
+		cwd: worktreePath,
+		...metadata,
+	});
+	try {
+		const result = await execute();
+		logger.git.info("Git operation completed", {
+			command,
+			durationMs: Date.now() - start,
+			cwd: worktreePath,
+		});
+		return result;
+	} catch (error) {
+		logger.git.error("Git operation failed", {
+			command,
+			cwd: worktreePath,
+			durationMs: Date.now() - start,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		throw error;
+	}
+}
+
 export const createGitOperationsRouter = () => {
 	return router({
 		// NOTE: saveFile is defined in file-contents.ts with hardened path validation
@@ -54,8 +86,10 @@ export const createGitOperationsRouter = () => {
 
 				return withGitLock(input.worktreePath, async () => {
 					const git = createGitForNetwork(input.worktreePath);
-					await withLockRetry(input.worktreePath, () =>
-						git.fetch(["--all", "--prune"])
+					await runLoggedGitOperation("fetch", input.worktreePath, () =>
+						withLockRetry(input.worktreePath, () =>
+							git.fetch(["--all", "--prune"])
+						)
 					);
 					invalidateGitStateCaches(input.worktreePath);
 					return { success: true };
@@ -81,8 +115,9 @@ export const createGitOperationsRouter = () => {
 					}
 
 					const git = createGit(input.worktreePath);
-					await withLockRetry(input.worktreePath, () =>
-						git.checkout(input.branch)
+					await runLoggedGitOperation("checkout", input.worktreePath, () =>
+						withLockRetry(input.worktreePath, () => git.checkout(input.branch)),
+						{ branch: input.branch }
 					);
 					invalidateGitStateCaches(input.worktreePath);
 					return { success: true };
@@ -171,8 +206,9 @@ export const createGitOperationsRouter = () => {
 							throw new Error("No files staged for commit");
 						}
 
-						const result = await withLockRetry(input.worktreePath, () =>
-							git.commit(input.message)
+						const result = await runLoggedGitOperation("commit", input.worktreePath, () =>
+							withLockRetry(input.worktreePath, () => git.commit(input.message)),
+							{ message: input.message }
 						);
 						invalidateGitStateCaches(input.worktreePath);
 						return { success: true, hash: result.commit };
@@ -207,13 +243,14 @@ export const createGitOperationsRouter = () => {
 						const git = createGit(input.worktreePath);
 
 						// First, unstage everything to start fresh
-						await withLockRetry(input.worktreePath, () =>
-							git.reset(["HEAD"])
+						await runLoggedGitOperation("reset --mixed HEAD", input.worktreePath, () =>
+							withLockRetry(input.worktreePath, () => git.reset(["HEAD"]))
 						);
 
 						// Stage only the selected files
-						await withLockRetry(input.worktreePath, () =>
-							git.add(["--", ...input.filePaths])
+						await runLoggedGitOperation("add", input.worktreePath, () =>
+							withLockRetry(input.worktreePath, () => git.add(["--", ...input.filePaths])),
+							{ fileCount: input.filePaths.length }
 						);
 
 						// Verify files were staged
@@ -223,8 +260,9 @@ export const createGitOperationsRouter = () => {
 						}
 
 						// Commit
-						const result = await withLockRetry(input.worktreePath, () =>
-							git.commit(input.message)
+						const result = await runLoggedGitOperation("atomicCommit", input.worktreePath, () =>
+							withLockRetry(input.worktreePath, () => git.commit(input.message)),
+							{ fileCount: input.filePaths.length, message: input.message }
 						);
 
 						invalidateGitStateCaches(input.worktreePath);
@@ -245,16 +283,21 @@ export const createGitOperationsRouter = () => {
 
 				return withGitLock(input.worktreePath, async () => {
 					const git = createGitForNetwork(input.worktreePath);
-					const hasUpstream = await hasUpstreamBranch(git);
+						const hasUpstream = await hasUpstreamBranch(git);
 
-					if (input.setUpstream && !hasUpstream) {
-						const branch = await git.revparse(["--abbrev-ref", "HEAD"]);
-						await withLockRetry(input.worktreePath, () =>
-							git.push(["--set-upstream", "origin", branch.trim()])
-						);
-					} else {
-						await withLockRetry(input.worktreePath, () => git.push());
-					}
+						if (input.setUpstream && !hasUpstream) {
+							const branch = await git.revparse(["--abbrev-ref", "HEAD"]);
+							await runLoggedGitOperation("push --set-upstream", input.worktreePath, () =>
+								withLockRetry(input.worktreePath, () =>
+									git.push(["--set-upstream", "origin", branch.trim()])
+								),
+								{ branch: branch.trim() }
+							);
+						} else {
+							await runLoggedGitOperation("push", input.worktreePath, () =>
+								withLockRetry(input.worktreePath, () => git.push())
+							);
+						}
 					await git.fetch();
 					invalidateGitStateCaches(input.worktreePath);
 					return { success: true };
@@ -432,8 +475,9 @@ export const createGitOperationsRouter = () => {
 						);
 					}
 
-					await withLockRetry(input.worktreePath, () =>
-						git.push(["--force-with-lease"])
+					await runLoggedGitOperation("push --force-with-lease", input.worktreePath, () =>
+						withLockRetry(input.worktreePath, () => git.push(["--force-with-lease"])),
+						{ branch }
 					);
 					await git.fetch();
 					invalidateGitStateCaches(input.worktreePath);
@@ -470,8 +514,8 @@ export const createGitOperationsRouter = () => {
 					}
 
 					// Fetch latest from remote first
-					await withLockRetry(input.worktreePath, () =>
-						git.fetch(["--all"])
+					await runLoggedGitOperation("fetch --all", input.worktreePath, () =>
+						withLockRetry(input.worktreePath, () => git.fetch(["--all"]))
 					);
 
 					// Determine default branch (main or master)
@@ -489,12 +533,18 @@ export const createGitOperationsRouter = () => {
 
 					try {
 						if (input.useRebase) {
-							await withLockRetry(input.worktreePath, () =>
-								git.rebase([`origin/${defaultBranch}`])
+							await runLoggedGitOperation("rebase", input.worktreePath, () =>
+								withLockRetry(input.worktreePath, () =>
+									git.rebase([`origin/${defaultBranch}`])
+								),
+								{ branch: defaultBranch }
 							);
 						} else {
-							await withLockRetry(input.worktreePath, () =>
-								git.merge([`origin/${defaultBranch}`, "--no-edit"])
+							await runLoggedGitOperation("merge", input.worktreePath, () =>
+								withLockRetry(input.worktreePath, () =>
+									git.merge([`origin/${defaultBranch}`, "--no-edit"])
+								),
+								{ branch: defaultBranch }
 							);
 						}
 					} catch (error) {
@@ -537,7 +587,9 @@ export const createGitOperationsRouter = () => {
 
 				return withGitLock(input.worktreePath, async () => {
 					const git = createGit(input.worktreePath);
-					await git.rebase(["--abort"]);
+					await runLoggedGitOperation("rebase --abort", input.worktreePath, () =>
+						git.rebase(["--abort"])
+					);
 					invalidateGitStateCaches(input.worktreePath);
 					return { success: true };
 				});
@@ -555,7 +607,9 @@ export const createGitOperationsRouter = () => {
 
 				return withGitLock(input.worktreePath, async () => {
 					const git = createGit(input.worktreePath);
-					await git.merge(["--abort"]);
+					await runLoggedGitOperation("merge --abort", input.worktreePath, () =>
+						git.merge(["--abort"])
+					);
 					invalidateGitStateCaches(input.worktreePath);
 					return { success: true };
 				});
@@ -590,12 +644,18 @@ export const createGitOperationsRouter = () => {
 
 						// Ensure branch is pushed first
 						if (!hasUpstream) {
-							await withLockRetry(input.worktreePath, () =>
-								git.push(["--set-upstream", "origin", branch])
+							await runLoggedGitOperation("createPR push --set-upstream", input.worktreePath, () =>
+								withLockRetry(input.worktreePath, () =>
+									git.push(["--set-upstream", "origin", branch])
+								),
+								{ branch }
 							);
 						} else {
 							// Push any unpushed commits
-							await withLockRetry(input.worktreePath, () => git.push());
+							await runLoggedGitOperation("createPR push", input.worktreePath, () =>
+								withLockRetry(input.worktreePath, () => git.push()),
+								{ branch }
+							);
 						}
 
 						// Get the remote URL to construct the GitHub compare URL

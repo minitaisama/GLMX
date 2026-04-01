@@ -131,6 +131,7 @@ contextBridge.exposeInMainWorld("desktopApi", {
   showNotification: (options: { title: string; body: string }) =>
     ipcRenderer.invoke("app:show-notification", options),
   openExternal: (url: string) => ipcRenderer.invoke("shell:open-external", url),
+  openPath: (filePath: string) => ipcRenderer.invoke("shell:open-path", filePath),
 
   // API base URL (for fetch requests to server)
   getApiBaseUrl: () => ipcRenderer.invoke("app:get-api-base-url"),

@@ -26,6 +26,7 @@ import { preferredEditorAtom } from "@/lib/atoms"
 import { useResolvedHotkeyDisplay } from "@/lib/hotkeys"
 import { APP_META } from "../../../../shared/external-apps"
 import { EDITOR_ICONS } from "@/lib/editor-icons"
+import { selectedProjectAtom } from "@/features/agents/atoms"
 
 interface InfoSectionProps {
   chatId: string
@@ -136,6 +137,7 @@ export const InfoSection = memo(function InfoSection({
   const [branchSwitchError, setBranchSwitchError] = useState<string | null>(null)
   // Extract folder name from path
   const folderName = worktreePath?.split("/").pop() || "Unknown"
+  const selectedProject = useAtomValue(selectedProjectAtom)
 
   // Preferred editor from settings
   const preferredEditor = useAtomValue(preferredEditorAtom)
@@ -396,6 +398,15 @@ export const InfoSection = memo(function InfoSection({
           title={worktreePath}
           onClick={handleOpenFolder}
           tooltip="Open in Finder"
+        />
+      )}
+      {!worktreePath && selectedProject?.path && (
+        <PropertyRow
+          icon={FolderFilledIcon}
+          label="Path"
+          value="Missing folder"
+          title={selectedProject.path}
+          tooltip={selectedProject.path}
         />
       )}
       {/* Open in Editor - only for actual git worktrees (under ~/.21st/worktrees/) */}

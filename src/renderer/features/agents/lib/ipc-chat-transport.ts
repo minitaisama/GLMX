@@ -17,6 +17,7 @@ import {
 } from "../../../lib/atoms"
 import { getQueryClient } from "../../../contexts/TRPCProvider"
 import { appStore } from "../../../lib/jotai-store"
+import { rlog } from "../../../lib/logger"
 import { trpcClient } from "../../../lib/trpc"
 import {
   askUserQuestionResultsAtom,
@@ -229,6 +230,8 @@ export class IPCChatTransport implements ChatTransport<UIMessage> {
     const subId = this.config.subChatId.slice(-8)
     let chunkCount = 0
     let lastChunkType = ""
+    let tokenCount = 0
+    let streamLogged = false
     console.log(`[SD] R:START sub=${subId} cwd=${this.config.cwd} projectPath=${this.config.projectPath || "(not set)"} customConfig=${customConfig ? "set" : "not set"}`)
 
     return new ReadableStream({
@@ -255,6 +258,16 @@ export class IPCChatTransport implements ChatTransport<UIMessage> {
             onData: (chunk: UIMessageChunk) => {
               chunkCount++
               lastChunkType = chunk.type
+              if (!streamLogged) {
+                streamLogged = true
+                rlog.chat.debug("Message streaming started", {
+                  chatId: this.config.chatId,
+                  subChatId: this.config.subChatId,
+                })
+              }
+              if (chunk.type === "text-delta") {
+                tokenCount += chunk.delta?.length ?? 0
+              }
 
               // Handle AskUserQuestion - show question UI
               if (chunk.type === "ask-user-question") {
@@ -498,6 +511,11 @@ export class IPCChatTransport implements ChatTransport<UIMessage> {
 
               if (chunk.type === "finish") {
                 console.log(`[SD] R:FINISH sub=${subId} n=${chunkCount}`)
+                rlog.chat.debug("Message streaming complete", {
+                  chatId: this.config.chatId,
+                  subChatId: this.config.subChatId,
+                  tokenCount,
+                })
                 try {
                   controller.close()
                 } catch {
@@ -524,6 +542,11 @@ export class IPCChatTransport implements ChatTransport<UIMessage> {
             },
             onComplete: () => {
               console.log(`[SD] R:COMPLETE sub=${subId} n=${chunkCount} last=${lastChunkType}`)
+              rlog.chat.debug("Message streaming complete", {
+                chatId: this.config.chatId,
+                subChatId: this.config.subChatId,
+                tokenCount,
+              })
               // Note: Don't clear pending questions here - let active-chat.tsx handle it
               // via the stream stop detection effect. Clearing here causes race conditions
               // where sync effect immediately restores from messages.
