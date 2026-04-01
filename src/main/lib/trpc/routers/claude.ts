@@ -41,6 +41,7 @@ import {
 } from "../../mcp-auth"
 import { fetchOAuthMetadata, getMcpBaseUrl } from "../../oauth"
 import { discoverPluginMcpServers } from "../../plugins"
+import { logger } from "../../logger"
 import { publicProcedure, router } from "../index"
 import { buildAgentsOption } from "./agent-utils"
 import { resolveWorkspaceForChat } from "./chat-workspace"
@@ -415,6 +416,52 @@ function getServerStatusFromConfig(serverConfig: McpServerConfig): string {
   // HTTP server without authType - assume no auth required (public endpoint)
   // Local stdio server - also connected
   return "connected"
+}
+
+async function getMergedMcpServersForProject(projectPath: string) {
+  const config = await readClaudeConfig()
+  const dirConfig = await readClaudeDirConfig()
+
+  // Merged global servers from all user-level sources
+  const globalServers = await getMergedGlobalMcpServers(config, dirConfig)
+
+  // Per-project servers from config files
+  const projectConfigServers = await getMergedLocalProjectMcpServers(
+    projectPath,
+    config,
+    dirConfig,
+  )
+
+  // .mcp.json from project root
+  const projectMcpJsonServers = await readProjectMcpJsonCached(projectPath)
+
+  // Merge: project config > .mcp.json > global
+  const merged: Record<string, McpServerConfig> = {
+    ...globalServers,
+    ...projectMcpJsonServers,
+    ...projectConfigServers,
+  }
+
+  // Add plugin MCP servers (enabled + approved only)
+  const [enabledPluginSources, pluginMcpConfigs, approvedServers] =
+    await Promise.all([
+      getEnabledPlugins(),
+      discoverPluginMcpServers(),
+      getApprovedPluginMcpServers(),
+    ])
+
+  for (const pluginConfig of pluginMcpConfigs) {
+    if (!enabledPluginSources.includes(pluginConfig.pluginSource)) continue
+    for (const [name, serverConfig] of Object.entries(pluginConfig.mcpServers)) {
+      if (merged[name]) continue
+      const identifier = `${pluginConfig.pluginSource}:${name}`
+      if (approvedServers.includes(identifier)) {
+        merged[name] = serverConfig
+      }
+    }
+  }
+
+  return merged
 }
 
 const MCP_FETCH_TIMEOUT_MS = 40_000
@@ -848,9 +895,17 @@ export const claudeRouter = router({
         let effectiveProjectPath = input.projectPath || input.cwd
         // Shared sessionId for cleanup to save on abort
         let currentSessionId: string | null = null
+        let sessionLoggedDone = false
         console.log(
           `[SD] M:START sub=${subId} stream=${streamId.slice(-8)} mode=${input.mode}`,
         )
+        logger.agent.info("session_started", {
+          sessionId: input.subChatId,
+          chatId: input.chatId,
+          projectPath: input.projectPath || input.cwd,
+          provider: input.customConfig?.baseUrl ? "custom" : "zai",
+          model: input.customConfig?.model || input.model || "default",
+        })
 
         // Track if observable is still active (not unsubscribed)
         let isObservableActive = true
@@ -874,6 +929,26 @@ export const claudeRouter = router({
           } catch {
             // Already completed or closed
           }
+        }
+
+        const logSessionEnd = (
+          event: "session_ended" | "session_crashed",
+          payload: Record<string, unknown>,
+        ) => {
+          if (sessionLoggedDone) return
+          sessionLoggedDone = true
+          const logPayload = {
+            sessionId: currentSessionId || input.subChatId,
+            chatId: input.chatId,
+            subChatId: input.subChatId,
+            durationMs: Date.now() - streamStart,
+            ...payload,
+          }
+          if (event === "session_crashed") {
+            logger.agent.error(event, logPayload)
+            return
+          }
+          logger.agent.info(event, logPayload)
         }
 
         // Helper to emit error to frontend
@@ -2200,6 +2275,10 @@ ${prompt}
                   if (!firstMessageReceived) {
                     firstMessageReceived = true
                     const timeToFirstMessage = Date.now() - streamIterationStart
+                    logger.agent.info("first_token", {
+                      sessionId: currentSessionId || input.subChatId,
+                      latencyMs: timeToFirstMessage,
+                    })
                     if (isUsingOllama) {
                       console.log(
                         `[Ollama] Time to first message: ${timeToFirstMessage}ms`,
@@ -2461,6 +2540,11 @@ ${prompt}
                         }
                         break
                       case "tool-input-available":
+                        logger.agent.debug("tool_called", {
+                          sessionId: currentSessionId || input.subChatId,
+                          tool: chunk.toolName,
+                          inputPreview: JSON.stringify(chunk.input).slice(0, 200),
+                        })
                         // DEBUG: Log tool calls
                         console.log(
                           `[SD] M:TOOL_CALL sub=${subId} toolName="${chunk.toolName}" mode=${input.mode} callId=${chunk.toolCallId}`,
@@ -2487,6 +2571,12 @@ ${prompt}
                         })
                         break
                       case "tool-output-available":
+                        logger.agent.debug("tool_result", {
+                          sessionId: currentSessionId || input.subChatId,
+                          toolCallId: chunk.toolCallId,
+                          success: true,
+                          outputPreview: JSON.stringify(chunk.output).slice(0, 200),
+                        })
                         const toolPart = parts.find(
                           (p) =>
                             p.type?.startsWith("tool-") &&
@@ -2616,6 +2706,19 @@ ${prompt}
                 } else if (err.message?.includes("exited with code")) {
                   errorContext = "Claude Code process crashed"
                   errorCategory = "PROCESS_CRASH"
+
+                  // Improve diagnostics for empty/non-git workspaces:
+                  // Claude can exit with code 1 and no stderr when the attached
+                  // folder is not a valid git workspace.
+                  if (!stderrOutput) {
+                    try {
+                      await fs.stat(path.join(input.cwd, ".git"))
+                    } catch {
+                      errorContext =
+                        "This chat is attached to a folder that is not a local git workspace. Select a valid repository folder or clone the repository first."
+                      errorCategory = "INVALID_WORKSPACE"
+                    }
+                  }
                 } else if (err.message?.includes("ENOENT")) {
                   errorContext = "Required executable not found in PATH"
                   errorCategory = "EXECUTABLE_NOT_FOUND"
@@ -2685,6 +2788,13 @@ ${prompt}
                     },
                   } as UIMessageChunk)
                 }
+
+                logSessionEnd("session_crashed", {
+                  error: err.message,
+                  exitCode: 1,
+                  totalChunks: chunkCount,
+                  category: errorCategory,
+                })
 
                 // ALWAYS save accumulated parts before returning (even on abort/error)
                 console.log(
@@ -2824,6 +2934,10 @@ ${prompt}
               // Keep protocol invariant for consumers that wait for finish.
               safeEmit({ type: "finish" } as UIMessageChunk)
             }
+            logSessionEnd("session_ended", {
+              exitCode: 0,
+              totalChunks: chunkCount,
+            })
             safeComplete()
           } catch (error) {
             const duration = ((Date.now() - streamStart) / 1000).toFixed(1)
@@ -2831,6 +2945,11 @@ ${prompt}
               `[SD] M:END sub=${subId} reason=unexpected_error n=${chunkCount} t=${duration}s`,
             )
             emitError(error, "Unexpected error")
+            logSessionEnd("session_crashed", {
+              error: error instanceof Error ? error.message : String(error),
+              exitCode: 1,
+              totalChunks: chunkCount,
+            })
             safeEmit({ type: "finish" } as UIMessageChunk)
             safeComplete()
           } finally {
@@ -2870,47 +2989,7 @@ ${prompt}
     .input(z.object({ projectPath: z.string() }))
     .query(async ({ input }) => {
       try {
-        const config = await readClaudeConfig()
-        const dirConfig = await readClaudeDirConfig()
-
-        // Merged global servers from all user-level sources
-        const globalServers = await getMergedGlobalMcpServers(config, dirConfig)
-
-        // Per-project servers from config files
-        const projectConfigServers = await getMergedLocalProjectMcpServers(input.projectPath, config, dirConfig)
-
-        // .mcp.json from project root
-        const projectMcpJsonServers = await readProjectMcpJsonCached(input.projectPath)
-
-        // Merge: project config > .mcp.json > global
-        const merged = {
-          ...globalServers,
-          ...projectMcpJsonServers,
-          ...projectConfigServers,
-        }
-
-        // Add plugin MCP servers (enabled + approved only)
-        const [enabledPluginSources, pluginMcpConfigs, approvedServers] =
-          await Promise.all([
-            getEnabledPlugins(),
-            discoverPluginMcpServers(),
-            getApprovedPluginMcpServers(),
-          ])
-
-        for (const pluginConfig of pluginMcpConfigs) {
-          if (!enabledPluginSources.includes(pluginConfig.pluginSource))
-            continue
-          for (const [name, serverConfig] of Object.entries(
-            pluginConfig.mcpServers,
-          )) {
-            if (!merged[name]) {
-              const identifier = `${pluginConfig.pluginSource}:${name}`
-              if (approvedServers.includes(identifier)) {
-                merged[name] = serverConfig
-              }
-            }
-          }
-        }
+        const merged = await getMergedMcpServersForProject(input.projectPath)
 
         // Convert to array format - determine status from config (no caching)
         const mcpServers = Object.entries(merged).map(
@@ -2935,6 +3014,79 @@ ${prompt}
           projectPath: input.projectPath,
           error: String(error),
         }
+      }
+    }),
+
+  /**
+   * Test configured MCP servers with live probe.
+   * Uses real tool discovery (HTTP/stdio) so UI can show Configured vs Live status.
+   */
+  testMcpServers: publicProcedure
+    .input(z.object({ projectPath: z.string() }))
+    .mutation(async ({ input }) => {
+      const projectPath = input.projectPath.trim()
+      if (!projectPath) {
+        throw new Error("Project path is required")
+      }
+
+      const merged = await getMergedMcpServersForProject(projectPath)
+      const entries = Object.entries(merged)
+
+      const results = await Promise.all(
+        entries.map(async ([name, serverConfig]) => {
+          let status = getServerStatusFromConfig(serverConfig)
+          let error: string | undefined
+          let toolCount = 0
+
+          try {
+            const tools = await fetchToolsForServer(serverConfig)
+            toolCount = tools.length
+            const cacheKey = mcpCacheKey(projectPath, name)
+            const headers = serverConfig.headers as
+              | Record<string, string>
+              | undefined
+
+            if (toolCount > 0) {
+              status = "connected"
+              workingMcpServers.set(cacheKey, true)
+            } else {
+              let needsAuth = false
+              if (serverConfig.url) {
+                try {
+                  const baseUrl = getMcpBaseUrl(serverConfig.url)
+                  const metadata = await fetchOAuthMetadata(baseUrl)
+                  needsAuth = !!metadata?.authorization_endpoint
+                } catch {
+                  // ignore metadata probe failures; fallback to generic failure
+                }
+              } else if (
+                serverConfig.authType === "oauth" ||
+                serverConfig.authType === "bearer"
+              ) {
+                needsAuth = true
+              }
+
+              if (needsAuth && !headers?.Authorization) {
+                status = "needs-auth"
+              } else {
+                status = "failed"
+                error = "No tools discovered or server unreachable"
+              }
+              workingMcpServers.set(cacheKey, false)
+            }
+          } catch (err) {
+            status = "failed"
+            error = err instanceof Error ? err.message : String(err)
+            workingMcpServers.set(mcpCacheKey(projectPath, name), false)
+          }
+
+          return { name, status, toolCount, error }
+        }),
+      )
+
+      return {
+        testedAt: new Date().toISOString(),
+        servers: results,
       }
     }),
 
