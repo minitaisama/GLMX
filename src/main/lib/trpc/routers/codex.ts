@@ -129,6 +129,54 @@ function getResponsePreview(message: unknown): string {
     .slice(0, 200)
 }
 
+function hasAssistantTextPart(parts: unknown): boolean {
+  if (!Array.isArray(parts)) return false
+  return parts.some(
+    (part: any) => part?.type === "text" && typeof part?.text === "string" && part.text.trim().length > 0,
+  )
+}
+
+function buildCodexFallbackSummary(parts: unknown): string {
+  if (!Array.isArray(parts)) {
+    return "Done. Task completed."
+  }
+
+  const toolParts = parts.filter(
+    (part: any) => typeof part?.type === "string" && part.type.startsWith("tool-"),
+  )
+  const uniqueToolNames = new Set(
+    toolParts
+      .map((part: any) => String(part.type || "").replace(/^tool-/, ""))
+      .filter(Boolean),
+  )
+
+  const touchedFiles = Array.from(
+    new Set(
+      toolParts
+        .filter((part: any) => part?.type === "tool-Write" || part?.type === "tool-Edit")
+        .map((part: any) => part?.input?.file_path)
+        .filter((pathValue: unknown): pathValue is string => typeof pathValue === "string" && pathValue.length > 0),
+    ),
+  )
+
+  const summaryLines: string[] = ["Done. Task completed."]
+  if (toolParts.length > 0) {
+    summaryLines.push(`Executed ${toolParts.length} tool step${toolParts.length === 1 ? "" : "s"}.`)
+  }
+  if (uniqueToolNames.size > 0) {
+    summaryLines.push(`Tools used: ${Array.from(uniqueToolNames).slice(0, 6).join(", ")}.`)
+  }
+  if (touchedFiles.length > 0) {
+    const preview = touchedFiles.slice(0, 3).join(", ")
+    const moreCount = touchedFiles.length - 3
+    summaryLines.push(
+      `Updated file${touchedFiles.length === 1 ? "" : "s"}: ${preview}${moreCount > 0 ? ` (+${moreCount} more)` : ""}.`,
+    )
+  }
+
+  return summaryLines.join(" ")
+}
+
 /** Check if there are any active Codex streaming sessions */
 export function hasActiveCodexStreams(): boolean {
   return activeStreams.size > 0
@@ -166,6 +214,7 @@ const DEFAULT_CODEX_MODEL = "standard/high"
 const CODEX_MCP_TOOLS_FETCH_TIMEOUT_MS = 40_000
 const CODEX_USAGE_POLL_ATTEMPTS = 3
 const CODEX_USAGE_POLL_INTERVAL_MS = 200
+const CODEX_STREAM_IDLE_TIMEOUT_MS = 120_000
 
 type CodexTokenUsage = {
   input_tokens?: number
@@ -1954,9 +2003,28 @@ export const codexRouter = router({
                 parts: cleanedParts,
               }
 
-              return normalizeCodexAssistantMessage(cleanedMessage, {
+              const normalizedMessage = normalizeCodexAssistantMessage(cleanedMessage, {
                 normalizeState: true,
               })
+
+              if (!normalizedMessage || !Array.isArray((normalizedMessage as any).parts)) {
+                return normalizedMessage
+              }
+
+              if (hasAssistantTextPart((normalizedMessage as any).parts)) {
+                return normalizedMessage
+              }
+
+              return {
+                ...(normalizedMessage as any),
+                parts: [
+                  ...(normalizedMessage as any).parts,
+                  {
+                    type: "text",
+                    text: buildCodexFallbackSummary((normalizedMessage as any).parts),
+                  },
+                ],
+              }
             }
 
             if (!isDuplicatePrompt) {
@@ -2042,6 +2110,7 @@ export const codexRouter = router({
             let firstChunkLogged = false
             let finishReason: string | undefined
             let toolCallCount = 0
+            let sawTextDelta = false
 
             const resolveUsageOnce = (): Promise<CodexUsageMetadata | null> => {
               if (usagePromise) return usagePromise
@@ -2149,9 +2218,43 @@ export const codexRouter = router({
 
             const reader = uiStream.getReader()
             let pendingFinishChunk: any | null = null
+            let receivedChunkCount = 0
             while (true) {
-              const { done, value } = await reader.read()
+              const next = await Promise.race([
+                reader.read().then((result) => ({ kind: "chunk" as const, result })),
+                sleep(CODEX_STREAM_IDLE_TIMEOUT_MS).then(() => ({ kind: "timeout" as const })),
+              ])
+
+              if (next.kind === "timeout") {
+                logger.agent.warn("stream_idle_timeout", {
+                  sessionId: latestSessionId || input.subChatId,
+                  subChatId: input.subChatId,
+                  idleMs: CODEX_STREAM_IDLE_TIMEOUT_MS,
+                  receivedChunkCount,
+                })
+
+                // If we already streamed content, gracefully end the stream instead of hanging forever.
+                if (receivedChunkCount > 0) {
+                  const usageMetadata = await resolveUsageOnce()
+                  if (usageMetadata) {
+                    safeEmit({
+                      type: "message-metadata",
+                      messageMetadata: usageMetadata,
+                    })
+                  }
+                  safeEmit({ type: "finish" })
+                  safeComplete()
+                  return
+                }
+
+                throw new Error(
+                  `Codex stream idle timeout after ${CODEX_STREAM_IDLE_TIMEOUT_MS}ms`,
+                )
+              }
+
+              const { done, value } = next.result
               if (done) break
+              receivedChunkCount += 1
 
               modelRequest.markStreamChunk()
               if (!firstChunkLogged) {
@@ -2176,6 +2279,14 @@ export const codexRouter = router({
               if (value?.type === "finish") {
                 pendingFinishChunk = value
                 continue
+              }
+
+              if (value?.type === "text-delta" && typeof value?.delta === "string" && value.delta.trim().length > 0) {
+                sawTextDelta = true
+              }
+
+              if (value?.type === "text-end") {
+                sawTextDelta = true
               }
 
               if (value?.type === "tool-input-available") {
@@ -2207,8 +2318,22 @@ export const codexRouter = router({
                   messageMetadata: usageMetadata,
                 })
               }
+              if (!sawTextDelta) {
+                const fallbackText = buildCodexFallbackSummary(
+                  (pendingFinishChunk as any)?.messageMetadata?.parts || [],
+                )
+                safeEmit({ type: "text-delta", delta: fallbackText })
+                safeEmit({ type: "text-end" })
+              }
               safeEmit(pendingFinishChunk)
             } else {
+              if (!sawTextDelta) {
+                safeEmit({
+                  type: "text-delta",
+                  delta: "Done. Task completed.",
+                })
+                safeEmit({ type: "text-end" })
+              }
               safeEmit({ type: "finish" })
             }
 
