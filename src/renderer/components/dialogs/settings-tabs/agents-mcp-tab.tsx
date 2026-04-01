@@ -473,7 +473,7 @@ export function AgentsMcpTab() {
   const providerSections = useMemo<ProviderSection[]>(
     () => [
       { provider: "claude-code", title: "CLAUDE CODE" },
-      { provider: "codex", title: "CODEX" },
+      { provider: "codex", title: "OPENAI-COMPATIBLE" },
     ],
     [],
   )

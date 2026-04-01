@@ -340,7 +340,7 @@ export function useCodexLoginFlow() {
     setError(data.error || null)
     if (data.state === "error") {
       const message =
-        data.error || "Codex login failed. Please retry."
+        data.error || "OpenAI-compatible login failed. Please retry."
       if (message) {
         notifyError(message)
       }
