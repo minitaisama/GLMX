@@ -4,17 +4,6 @@ GLMX is a desktop coding-agent app powered by ZAI/GLM providers, with local work
 
 GLMX là ứng dụng coding-agent desktop dùng ZAI/GLM, hỗ trợ workflow local workspace, chat + tool, thay đổi code theo git, và đầu ra sẵn sàng để review.
 
-## Screenshots / Ảnh giao diện
-
-### Main UI
-![GLMX Main UI](assets/cursor-ui.gif)
-
-### Plan Mode
-![GLMX Plan Mode](assets/plan-mode.gif)
-
-### Worktree Flow
-![GLMX Worktree Flow](assets/worktree.gif)
-
 ## Features / Tính năng
 
 - Local repository selection and workspace-aware chats
