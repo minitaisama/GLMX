@@ -1,55 +1,56 @@
 # GLMX
 
-`GLMX` is a `ZAI Agent` desktop fork focused on running the local coding agent workflow with Z.AI-backed GLM models through the Claude Code-compatible route.
+GLMX is a desktop coding-agent app powered by ZAI/GLM providers, with local workspace flow, chat + tools, git-aware changes, and review-ready outputs.
 
-This fork keeps the core desktop experience from the upstream app:
+GLMX là ứng dụng coding-agent desktop dùng ZAI/GLM, hỗ trợ workflow local workspace, chat + tool, thay đổi code theo git, và đầu ra sẵn sàng để review.
 
-- multi-pane coding agent UI
-- local project selection
-- diff preview and approval
-- terminal output
-- git panel and commit flow
-- Claude/Codex runtime integration
+## Screenshots / Ảnh giao diện
 
-The main change is the onboarding and configuration flow:
+### Main UI
+![GLMX Main UI](assets/cursor-ui.gif)
 
-- no hosted account onboarding is required to open the app
-- the app asks for a ZAI API key on first launch
-- ZAI settings are persisted locally
-- model routing is written into `~/.claude/settings.json`
+### Plan Mode
+![GLMX Plan Mode](assets/plan-mode.gif)
 
-## What This Fork Does
+### Worktree Flow
+![GLMX Worktree Flow](assets/worktree.gif)
 
-- replaces hosted onboarding with local ZAI onboarding
-- stores ZAI config in app user data
-- syncs ZAI environment values into `~/.claude/settings.json`
-- adds a settings section for updating the key and GLM model mapping
-- strips hosted branding, analytics, and update checks from the desktop flow
+## Features / Tính năng
 
-## Default ZAI Mapping
+- Local repository selection and workspace-aware chats
+- Multi-pane agent UI (chat, changes, terminal, details)
+- Diff preview + apply/review workflow
+- Git branch and commit helpers
+- MCP server integration
+- Provider model mapping (Heavy / Standard / Fast)
 
-The app writes these defaults unless you change them in Settings:
+- Chọn repo local và chat theo workspace
+- Giao diện đa panel (chat, changes, terminal, details)
+- Xem diff + luồng apply/review
+- Hỗ trợ git branch và commit
+- Tích hợp MCP server
+- Mapping model theo slot (Heavy / Standard / Fast)
 
-- Base URL: `https://api.z.ai/api/anthropic`
-- Heavy model: `glm-4.7`
-- Standard model: `glm-4.7`
-- Fast model: `glm-4.5-air`
+## Configuration / Cấu hình
 
-For GLM Coding Plan usage, keep the same Base URL and remap the three Claude Code slots to the GLM family you want, for example:
+GLMX stores provider config locally and routes model calls through configured providers.
 
-- Heavy model: `glm-5.1`
-- Standard model: `glm-5`
-- Fast model: `glm-5-turbo`
+GLMX lưu cấu hình provider cục bộ và route model call theo provider đã chọn.
 
-## First Launch Flow
+Common settings:
 
-1. Open the app
-2. Paste your ZAI API key
-3. Click `Start`
-4. Pick a local project folder
-5. Start using the agent
+- Base URL: `https://api.z.ai/api/anthropic` (for ZAI-compatible Anthropic route)
+- Model slots:
+  - Heavy: complex tasks
+  - Standard: general coding tasks
+  - Fast: lightweight/quick tasks
 
-The app remembers your config between launches.
+## First Run / Khởi động lần đầu
+
+1. Open GLMX / Mở GLMX
+2. Add API key in onboarding or Settings / Nhập API key ở onboarding hoặc Settings
+3. Select local folder / Chọn thư mục local
+4. Start a new thread and run tasks / Tạo thread mới và chạy task
 
 ## Development
 
@@ -57,7 +58,7 @@ The app remembers your config between launches.
 
 - Bun
 - Node.js
-- macOS, Linux, or Windows build tooling required by Electron native modules
+- Build tools for Electron native modules (macOS/Linux/Windows)
 
 ### Install
 
@@ -67,51 +68,41 @@ bun run claude:download
 bun run codex:download
 ```
 
-### Run in Dev
+### Run (Dev)
 
 ```bash
 bun run dev
 ```
 
-### Production Build
+### Build
 
 ```bash
 bun run build
 ```
 
-Optionally package the desktop app:
+### Package
 
 ```bash
 bun run package:mac
-# or
 bun run package:win
-# or
 bun run package:linux
 ```
 
-## Key Files
+## Important Paths / File quan trọng
 
-- `src/main/lib/zai-config.ts`
-  local ZAI config persistence and sync into Claude settings
+- `src/main/lib/zai-config.ts` — config read/write + provider env
+- `src/main/lib/trpc/routers/zai.ts` — provider config procedures
+- `src/main/lib/trpc/routers/claude.ts` — agent runtime path
+- `src/main/lib/trpc/routers/codex.ts` — OpenAI-compatible runtime path
+- `src/renderer/App.tsx` — app bootstrap + routing
+- `src/renderer/features/onboarding/*` — first-run onboarding
 
-- `src/main/lib/trpc/routers/zai.ts`
-  tRPC procedures for reading and saving ZAI config
+## Notes / Ghi chú
 
-- `src/renderer/features/onboarding/zai-onboarding-page.tsx`
-  first-run onboarding screen for entering the ZAI key
-
-- `src/renderer/components/dialogs/settings-tabs/agents-models-tab.tsx`
-  settings UI for editing the saved key and model mapping
-
-- `src/renderer/App.tsx`
-  root renderer gate that decides whether to show onboarding or the workspace
-
-## Notes
-
-- This repo is intended for local desktop usage.
-- Some upstream web/cloud features are intentionally disabled or no-op in this fork.
-- The runtime still relies on the bundled agent binaries downloaded by the setup scripts.
+- This project is intended for local desktop usage.
+- Upstream hosted/cloud-only flows are reduced or removed in this fork.
+- Runtime binaries are downloaded via setup scripts.
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+Apache License 2.0 — see [LICENSE](LICENSE).
