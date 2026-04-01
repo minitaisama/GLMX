@@ -23,6 +23,46 @@ export function stripEmojis(text: string): string {
 function repairStreamingArtifacts(text: string): string {
   if (!text) return text
 
+  const isLikelyJsxArtifactLine = (line: string): boolean => {
+    const trimmed = line.trim()
+    if (!trimmed) return false
+
+    // Keep markdown angle-bracket autolinks intact (e.g. <https://...>)
+    if (/^<https?:\/\//i.test(trimmed)) return false
+
+    // Incomplete/complete JSX-ish tags leaked into text stream
+    if (/^<\/?[A-Za-z][\w:-]*/.test(trimmed)) {
+      return (
+        trimmed.includes("className=") ||
+        trimmed.includes("onClick=") ||
+        trimmed.includes("onMouse") ||
+        trimmed.includes("{") ||
+        trimmed.includes("/>") ||
+        trimmed.startsWith("<div") ||
+        trimmed.startsWith("<span") ||
+        trimmed.startsWith("<button") ||
+        trimmed.startsWith("<Branch") ||
+        trimmed.startsWith("</")
+      )
+    }
+
+    // Standalone JSX expression lines
+    if (/^\{[^{}]+\}$/.test(trimmed)) {
+      return trimmed.includes("?.") || trimmed.includes("className") || trimmed.includes("hover:")
+    }
+
+    return false
+  }
+
+  const escapeLikelyJsxLines = (segment: string): string =>
+    segment
+      .split("\n")
+      .map((line) => {
+        if (!isLikelyJsxArtifactLine(line)) return line
+        return line.replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      })
+      .join("\n")
+
   const segments = text.split(/(```[\s\S]*?```)/g)
 
   return segments
@@ -31,11 +71,11 @@ function repairStreamingArtifacts(text: string): string {
         return segment
       }
 
-      return segment
+      return escapeLikelyJsxLines(segment)
         // Recover JSX prop text accidentally surfaced as plain output.
         .replace(/^(\s*)["']([^"\n]+?)["']\s*\/>\s*$/gm, "$1$2")
         // Drop stray wrapper-closing lines that often leak after partial JSX output.
-        .replace(/^\s*[)}]\s*$/gm, "")
+        .replace(/^\s*[)}]{1,3}\s*$/gm, "")
         // Remove dangling self-closing fragment tails that survive without their opening tag.
         .replace(/\s*\/>\s*$/gm, "")
         // Collapse oversized gaps introduced by stripped artifact lines.
