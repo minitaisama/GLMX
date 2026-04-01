@@ -23,6 +23,11 @@ The system SHALL support sending chat requests to OpenAI-compatible provider end
 - **THEN** the request includes `Host: 9router.colenboro.xyz`
 - **AND** the request includes `User-Agent: curl/7.88.1`
 
+#### Scenario: Initial fallback when tool calling is unavailable
+- **WHEN** an OpenAI-compatible provider does not support usable tool calling responses
+- **THEN** the system may route that provider in text-only mode for the initial implementation
+- **AND** Anthropic-compatible providers continue to use the existing tool-capable path
+
 ### Requirement: Stream Normalization
 The system SHALL normalize OpenAI-compatible streaming responses into the existing UI chunk model used by agent chats.
 

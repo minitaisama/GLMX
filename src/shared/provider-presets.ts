@@ -1,67 +1,52 @@
-export type ProviderPresetId = "zai" | "9router" | "custom"
+export type ProviderType = "anthropic-compatible" | "openai-compatible"
 
 export interface ProviderPreset {
-  id: ProviderPresetId
-  label: string
+  id: string
+  name: string
+  type: ProviderType
   baseUrl: string
-  headers?: Record<string, string>
-  defaultModels: {
-    opus: string
-    sonnet: string
-    haiku: string
+  apiKeyLabel: string
+  apiKeyPlaceholder: string
+  defaultHeaders?: Record<string, string>
+  models: {
+    heavy: string
+    standard: string
+    fast: string
   }
 }
 
-export const PROVIDER_PRESETS: ProviderPreset[] = [
-  {
+export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
+  zai: {
     id: "zai",
-    label: "ZAI",
+    name: "ZAI (GLM-5)",
+    type: "anthropic-compatible",
     baseUrl: "https://api.z.ai/api/anthropic",
-    defaultModels: {
-      opus: "glm-4.7",
-      sonnet: "glm-4.7",
-      haiku: "glm-4.5-air",
+    apiKeyLabel: "ZAI API Key",
+    apiKeyPlaceholder: "Paste your ZAI API key...",
+    models: {
+      heavy: "glm-5.1",
+      standard: "glm-5-turbo",
+      fast: "glm-4.5-air",
     },
   },
-  {
-    id: "9router",
-    label: "9Router",
+
+  "nine-router": {
+    id: "nine-router",
+    name: "9router",
+    type: "openai-compatible",
     baseUrl: "https://9router.colenboro.xyz/v1",
-    headers: {
+    apiKeyLabel: "9router API Key",
+    apiKeyPlaceholder: "Paste your 9router API key...",
+    defaultHeaders: {
       Host: "9router.colenboro.xyz",
       "User-Agent": "curl/7.88.1",
     },
-    defaultModels: {
-      opus: "gpt",
-      sonnet: "gpt",
-      haiku: "gpt",
+    models: {
+      heavy: "gpt-4o",
+      standard: "gpt-4o",
+      fast: "gpt-4o-mini",
     },
   },
-  {
-    id: "custom",
-    label: "Custom",
-    baseUrl: "",
-    defaultModels: {
-      opus: "",
-      sonnet: "",
-      haiku: "",
-    },
-  },
-]
-
-export const DEFAULT_PROVIDER_PRESET = PROVIDER_PRESETS[0]
-
-export function getPresetById(id: ProviderPresetId): ProviderPreset {
-  return PROVIDER_PRESETS.find((preset) => preset.id === id) || DEFAULT_PROVIDER_PRESET
 }
 
-export function inferPresetId(baseUrl: string): ProviderPresetId {
-  const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, "")
-
-  const matchedPreset = PROVIDER_PRESETS.find((preset) => {
-    if (!preset.baseUrl) return false
-    return preset.baseUrl.replace(/\/+$/, "") === normalizedBaseUrl
-  })
-
-  return matchedPreset?.id || "custom"
-}
+export const DEFAULT_PRESET_ID = "zai"

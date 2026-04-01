@@ -15,6 +15,7 @@ import {
   sessionInfoAtom,
   showOfflineModeFeaturesAtom,
 } from "../../../lib/atoms"
+import { getQueryClient } from "../../../contexts/TRPCProvider"
 import { appStore } from "../../../lib/jotai-store"
 import { rlog } from "../../../lib/logger"
 import { trpcClient } from "../../../lib/trpc"
@@ -106,6 +107,11 @@ const ERROR_TOAST_CONFIG: Record<
         ),
     },
   },
+  INVALID_LOCAL_WORKSPACE: {
+    title: "Workspace moved",
+    description:
+      "This chat is pointing at a folder that no longer exists. Relink it to the new location and try again.",
+  },
   NETWORK_ERROR: {
     title: "Network error",
     description: "Check your internet connection and try again.",
@@ -141,6 +147,34 @@ type ImageAttachment = {
 
 export class IPCChatTransport implements ChatTransport<UIMessage> {
   constructor(private config: IPCChatTransportConfig) {}
+
+  private async relinkWorkspace() {
+    const result = await trpcClient.projects.relinkChatWorkspace.mutate({
+      chatId: this.config.chatId,
+    })
+
+    if (!result?.success) {
+      if (result?.reason !== "canceled") {
+        toast.error("Could not relink workspace", {
+          description: "The selected folder could not be attached to this chat.",
+        })
+      }
+      return
+    }
+
+    const queryClient = getQueryClient()
+    await Promise.all([
+      queryClient?.invalidateQueries({ queryKey: [["projects", "list"]] }),
+      queryClient?.invalidateQueries({ queryKey: [["chats", "list"]] }),
+      queryClient?.invalidateQueries({
+        queryKey: [["chats", "get"], { input: { id: this.config.chatId }, type: "query" }],
+      }),
+    ])
+
+    toast.success("Workspace relinked", {
+      description: "Send your message again and we will use the new folder.",
+    })
+  }
 
   async sendMessages(options: {
     messages: UIMessage[]
@@ -444,16 +478,26 @@ export class IPCChatTransport implements ChatTransport<UIMessage> {
                   ? rawDescription.slice(0, 300) + "..."
                   : rawDescription
 
+                const action =
+                  category === "INVALID_LOCAL_WORKSPACE"
+                    ? {
+                        label: "Relink Folder",
+                        onClick: () => {
+                          void this.relinkWorkspace()
+                        },
+                      }
+                    : config?.action || {
+                        label: "Copy Error",
+                        onClick: () => {
+                          navigator.clipboard.writeText(errorDetails)
+                          toast.success("Error details copied to clipboard")
+                        },
+                      }
+
                 toast.error(title, {
                   description,
                   duration: 12000,
-                  action: {
-                    label: "Copy Error",
-                    onClick: () => {
-                      navigator.clipboard.writeText(errorDetails)
-                      toast.success("Error details copied to clipboard")
-                    },
-                  },
+                  action,
                 })
               }
 

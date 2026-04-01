@@ -8,6 +8,7 @@ GLMX currently routes provider configuration into Claude Code via Anthropic-styl
 - Detect the `9router` preset as an OpenAI-compatible provider and use its required custom headers.
 - Preserve the existing Anthropic-compatible flow for ZAI and other Anthropic-style endpoints.
 - Expose provider transport metadata in config so the app can persist adapter-specific behavior.
+- Keep this change scoped to the adapter layer only; do not add broader provider-management UI beyond the current config surfaces.
 
 ## Impact
 - Affected specs: provider-routing
@@ -16,4 +17,4 @@ GLMX currently routes provider configuration into Claude Code via Anthropic-styl
   - `src/main/lib/trpc/routers/zai.ts`
   - `src/main/lib/trpc/routers/claude.ts`
   - `src/shared/provider-presets.ts`
-  - onboarding/settings provider UI
+  - existing onboarding/settings provider config surfaces

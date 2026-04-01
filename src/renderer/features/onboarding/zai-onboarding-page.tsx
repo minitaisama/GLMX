@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
 import { Button } from "../../components/ui/button"
+import { ButtonGroup } from "../../components/ui/button-group"
 import { Input } from "../../components/ui/input"
 import { Label } from "../../components/ui/label"
 import { Logo } from "../../components/ui/logo"
@@ -14,18 +15,14 @@ import {
   SelectValue,
 } from "../../components/ui/select"
 import { trpc } from "../../lib/trpc"
-import { rlog } from "../../lib/logger"
-import {
-  DEFAULT_PROVIDER_PRESET,
-  getPresetById,
-  inferPresetId,
-  PROVIDER_PRESETS,
-  type ProviderPresetId,
-} from "../../../shared/provider-presets"
+import { ZAI_MODEL_SLOT_PRESETS } from "../../../shared/zai-model-presets"
 
-function isLikelyApiKey(value: string) {
+const ZAI_MODELS = ["glm-5-turbo", "glm-5.1", "glm-5", "glm-4.7", "glm-4.5-air"]
+const DEFAULT_BASE_URL = "https://api.z.ai/api/anthropic"
+
+function isLikelyZaiKey(value: string) {
   const trimmed = value.trim()
-  return trimmed.length >= 10 || trimmed.startsWith("sk-") || trimmed.startsWith("zai")
+  return trimmed.length >= 20 || trimmed.startsWith("zai") || trimmed.startsWith("glm")
 }
 
 export function ZaiOnboardingPage({
@@ -38,8 +35,6 @@ export function ZaiOnboardingPage({
 
   const [apiKey, setApiKey] = useState("")
   const [showAdvanced, setShowAdvanced] = useState(false)
-  const [providerPreset, setProviderPreset] = useState<ProviderPresetId>(DEFAULT_PROVIDER_PRESET.id)
-  const [baseUrl, setBaseUrl] = useState(DEFAULT_PROVIDER_PRESET.baseUrl)
   const [opusModel, setOpusModel] = useState("glm-4.7")
   const [sonnetModel, setSonnetModel] = useState("glm-4.7")
   const [haikuModel, setHaikuModel] = useState("glm-4.5-air")
@@ -47,54 +42,14 @@ export function ZaiOnboardingPage({
 
   useEffect(() => {
     if (!existingConfig) return
-    setProviderPreset(inferPresetId(existingConfig.baseUrl))
-    setBaseUrl(existingConfig.baseUrl)
     setOpusModel(existingConfig.opusModel)
     setSonnetModel(existingConfig.sonnetModel)
     setHaikuModel(existingConfig.haikuModel)
   }, [existingConfig])
 
-  const handlePresetChange = (value: string) => {
-    const nextPresetId = value as ProviderPresetId
-    const preset = getPresetById(nextPresetId)
-
-    setProviderPreset(nextPresetId)
-    setBaseUrl(preset.baseUrl)
-
-    if (nextPresetId !== "custom") {
-      setOpusModel(preset.defaultModels.opus)
-      setSonnetModel(preset.defaultModels.sonnet)
-      setHaikuModel(preset.defaultModels.haiku)
-    }
-  }
-
   const handleSubmit = async () => {
-    const normalizedBaseUrl = baseUrl.trim()
-    const selectedPreset =
-      providerPreset === "custom"
-        ? getPresetById(inferPresetId(normalizedBaseUrl))
-        : getPresetById(providerPreset)
-
-    rlog.auth.info("User submitted API key", {
-      hasKey: Boolean(apiKey.trim()),
-      baseUrl: normalizedBaseUrl,
-      customHeaders: selectedPreset.headers || null,
-      opusModel,
-      sonnetModel,
-      haikuModel,
-    })
-    if (!isLikelyApiKey(apiKey)) {
-      setError("API key khong hop le")
-      return
-    }
-
-    if (!normalizedBaseUrl) {
-      setError("Base URL khong duoc de trong")
-      return
-    }
-
-    if (!opusModel.trim() || !sonnetModel.trim() || !haikuModel.trim()) {
-      setError("Hay nhap day du model cho Heavy, Standard va Fast tasks")
+    if (!isLikelyZaiKey(apiKey)) {
+      setError("API key khong hop le. Lay key tai z.ai/manage-apikey/apikey-list")
       return
     }
 
@@ -103,23 +58,27 @@ export function ZaiOnboardingPage({
     try {
       await saveConfig.mutateAsync({
         apiKey: apiKey.trim(),
-        baseUrl: normalizedBaseUrl,
-        customHeaders: selectedPreset.headers,
-        opusModel: opusModel.trim(),
-        sonnetModel: sonnetModel.trim(),
-        haikuModel: haikuModel.trim(),
+        baseUrl: DEFAULT_BASE_URL,
+        opusModel,
+        sonnetModel,
+        haikuModel,
       })
-      toast.success("Provider config saved")
-      rlog.auth.info("Onboarding complete — entering workspace")
+      toast.success("ZAI config saved")
       onComplete()
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : "Khong the luu provider config"
-      rlog.auth.error("Config save failed", {
-        error: err instanceof Error ? err.message : String(err),
-      })
+        err instanceof Error ? err.message : "Khong the luu ZAI config"
       setError(message)
     }
+  }
+
+  const applyModelSlotPreset = (presetId: string) => {
+    const preset = ZAI_MODEL_SLOT_PRESETS.find((item) => item.id === presetId)
+    if (!preset) return
+
+    setOpusModel(preset.models.opus)
+    setSonnetModel(preset.models.sonnet)
+    setHaikuModel(preset.models.haiku)
   }
 
   return (
@@ -139,14 +98,14 @@ export function ZaiOnboardingPage({
           <div className="space-y-1">
             <h1 className="text-base font-semibold tracking-tight">ZAI Agent</h1>
             <p className="text-sm text-muted-foreground">
-              Nhap API key de bat dau voi model endpoint rieng cua ban.
+              Nhap Z.AI API key de bat dau voi Claude Code-compatible GLM routing.
             </p>
           </div>
         </div>
 
         <div className="space-y-4">
           <div className="space-y-2">
-            <Label className="text-sm font-medium">API Key</Label>
+            <Label className="text-sm font-medium">ZAI API Key</Label>
             <Input
               type="password"
               value={apiKey}
@@ -156,10 +115,21 @@ export function ZaiOnboardingPage({
                   void handleSubmit()
                 }
               }}
-              placeholder="Paste your API key"
+              placeholder="Paste your ZAI API key"
               autoFocus
               disabled={saveConfig.isPending}
             />
+            <p className="text-xs text-muted-foreground">
+              Lay key tai{" "}
+              <a
+                href="https://z.ai/manage-apikey/apikey-list"
+                target="_blank"
+                rel="noreferrer"
+                className="text-foreground hover:underline"
+              >
+                z.ai/manage-apikey/apikey-list
+              </a>
+            </p>
           </div>
 
           {error ? (
@@ -187,77 +157,72 @@ export function ZaiOnboardingPage({
         {showAdvanced ? (
           <div className="border border-border rounded-lg p-4 space-y-4">
             <p className="text-xs text-muted-foreground">
-              Claude Code se doc Base URL va model mapping tu ~/.claude/settings.json.
+              Claude Code se doc Base URL va 3 model slots tu ~/.claude/settings.json.
+              De dung GLM Coding Plan, giu Base URL la https://api.z.ai/api/anthropic
+              va map model nhu glm-5.1 / glm-5 / glm-5-turbo tuy nhu cau.
             </p>
             <div className="space-y-2">
-              <Label className="text-sm font-medium">Preset</Label>
-              <Select value={providerPreset} onValueChange={handlePresetChange}>
+              <Label className="text-sm font-medium">Quick presets</Label>
+              <ButtonGroup className="flex w-full [&>button]:flex-1">
+                {ZAI_MODEL_SLOT_PRESETS.map((preset) => (
+                  <Button
+                    key={preset.id}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => applyModelSlotPreset(preset.id)}
+                    disabled={saveConfig.isPending}
+                    title={preset.description}
+                  >
+                    {preset.label}
+                  </Button>
+                ))}
+              </ButtonGroup>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Heavy tasks</Label>
+              <Select value={opusModel} onValueChange={setOpusModel}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {PROVIDER_PRESETS.map((preset) => (
-                    <SelectItem key={preset.id} value={preset.id}>
-                      {preset.label}
+                  {ZAI_MODELS.map((model) => (
+                    <SelectItem key={model} value={model}>
+                      {model}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-2">
-              <Label className="text-sm font-medium">Base URL</Label>
-              <Input
-                value={baseUrl}
-                onChange={(e) => {
-                  setProviderPreset("custom")
-                  setBaseUrl(e.target.value)
-                }}
-                placeholder="https://api.z.ai/api/anthropic"
-                disabled={saveConfig.isPending}
-              />
-            </div>
-            {getPresetById(
-              providerPreset === "custom" ? inferPresetId(baseUrl) : providerPreset,
-            ).headers ? (
-              <div className="space-y-2">
-                <Label className="text-sm font-medium">Custom headers</Label>
-                <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground whitespace-pre-wrap">
-                  {Object.entries(
-                    getPresetById(
-                      providerPreset === "custom" ? inferPresetId(baseUrl) : providerPreset,
-                    ).headers || {},
-                  )
-                    .map(([name, value]) => `${name}: ${value}`)
-                    .join("\n")}
-                </div>
-              </div>
-            ) : null}
-            <div className="space-y-2">
-              <Label className="text-sm font-medium">Heavy tasks</Label>
-              <Input
-                value={opusModel}
-                onChange={(e) => setOpusModel(e.target.value)}
-                placeholder="glm-4.7"
-                disabled={saveConfig.isPending}
-              />
-            </div>
-            <div className="space-y-2">
               <Label className="text-sm font-medium">Standard tasks</Label>
-              <Input
-                value={sonnetModel}
-                onChange={(e) => setSonnetModel(e.target.value)}
-                placeholder="glm-4.7"
-                disabled={saveConfig.isPending}
-              />
+              <Select value={sonnetModel} onValueChange={setSonnetModel}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ZAI_MODELS.map((model) => (
+                    <SelectItem key={model} value={model}>
+                      {model}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-2">
               <Label className="text-sm font-medium">Fast tasks</Label>
-              <Input
-                value={haikuModel}
-                onChange={(e) => setHaikuModel(e.target.value)}
-                placeholder="glm-4.5-air"
-                disabled={saveConfig.isPending}
-              />
+              <Select value={haikuModel} onValueChange={setHaikuModel}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ZAI_MODELS.map((model) => (
+                    <SelectItem key={model} value={model}>
+                      {model}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </div>
         ) : null}

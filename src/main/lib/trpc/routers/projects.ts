@@ -1,7 +1,7 @@
 import { z } from "zod"
 import { router, publicProcedure } from "../index"
-import { getDatabase, projects } from "../../db"
-import { eq, desc } from "drizzle-orm"
+import { chats, getDatabase, projects } from "../../db"
+import { desc, eq, inArray } from "drizzle-orm"
 import { dialog, BrowserWindow, app } from "electron"
 import { basename, join } from "path"
 import { exec } from "node:child_process"
@@ -12,14 +12,14 @@ import { extname } from "node:path"
 import { getGitRemoteInfo } from "../../git"
 import { trackProjectOpened } from "../../analytics"
 import { getLaunchDirectory } from "../../cli"
+import { trimProjectRecordPaths } from "./chat-workspace"
 
 const execAsync = promisify(exec)
 
-function withPathStatus<T extends { path: string }>(project: T | null | undefined) {
-  if (!project) return project
+function withPathExists<T extends { path: string }>(project: T) {
   return {
     ...project,
-    pathExists: existsSync(project.path),
+    pathExists: existsSync(project.path.trim()),
   }
 }
 
@@ -36,8 +36,14 @@ export const projectsRouter = router({
    * List all projects
    */
   list: publicProcedure.query(() => {
+    trimProjectRecordPaths()
     const db = getDatabase()
-    return db.select().from(projects).orderBy(desc(projects.updatedAt)).all().map((project) => withPathStatus(project))
+    return db
+      .select()
+      .from(projects)
+      .orderBy(desc(projects.updatedAt))
+      .all()
+      .map(withPathExists)
   }),
 
   /**
@@ -46,8 +52,10 @@ export const projectsRouter = router({
   get: publicProcedure
     .input(z.object({ id: z.string() }))
     .query(({ input }) => {
+      trimProjectRecordPaths()
       const db = getDatabase()
-      return withPathStatus(db.select().from(projects).where(eq(projects.id, input.id)).get())
+      const project = db.select().from(projects).where(eq(projects.id, input.id)).get()
+      return project ? withPathExists(project) : null
     }),
 
   /**
@@ -79,8 +87,8 @@ export const projectsRouter = router({
       return null
     }
 
-    const folderPath = result.filePaths[0]!
-    const folderName = basename(folderPath)
+      const folderPath = result.filePaths[0]!.trim()
+      const folderName = basename(folderPath).trim()
 
     // Get git remote info
     const gitInfo = await getGitRemoteInfo(folderPath)
@@ -148,13 +156,14 @@ export const projectsRouter = router({
     .input(z.object({ path: z.string(), name: z.string().optional() }))
     .mutation(async ({ input }) => {
       const db = getDatabase()
-      const name = input.name || basename(input.path)
+      const normalizedPath = input.path.trim()
+      const name = (input.name?.trim() || basename(normalizedPath)).trim()
 
       // Check if project already exists
       const existing = db
         .select()
         .from(projects)
-        .where(eq(projects.path, input.path))
+        .where(eq(projects.path, normalizedPath))
         .get()
 
       if (existing) {
@@ -162,13 +171,13 @@ export const projectsRouter = router({
       }
 
       // Get git remote info
-      const gitInfo = await getGitRemoteInfo(input.path)
+      const gitInfo = await getGitRemoteInfo(normalizedPath)
 
       return db
         .insert(projects)
         .values({
           name,
-          path: input.path,
+          path: normalizedPath,
           gitRemoteUrl: gitInfo.remoteUrl,
           gitProvider: gitInfo.provider,
           gitOwner: gitInfo.owner,
@@ -187,19 +196,39 @@ export const projectsRouter = router({
       const db = getDatabase()
       return db
         .update(projects)
-        .set({ name: input.name, updatedAt: new Date() })
+        .set({ name: input.name.trim(), updatedAt: new Date() })
         .where(eq(projects.id, input.id))
         .returning()
         .get()
     }),
 
-  relinkFolder: publicProcedure
-    .input(z.object({ id: z.string() }))
+  relinkChatWorkspace: publicProcedure
+    .input(z.object({ chatId: z.string() }))
     .mutation(async ({ input, ctx }) => {
-      const window = ctx.getWindow?.() ?? BrowserWindow.getFocusedWindow()
+      const db = getDatabase()
+      const chat = db
+        .select()
+        .from(chats)
+        .where(eq(chats.id, input.chatId))
+        .get()
 
+      if (!chat) {
+        throw new Error("Chat not found")
+      }
+
+      const project = db
+        .select()
+        .from(projects)
+        .where(eq(projects.id, chat.projectId))
+        .get()
+
+      if (!project) {
+        throw new Error("Project not found")
+      }
+
+      const window = ctx.getWindow?.() ?? BrowserWindow.getFocusedWindow()
       if (!window) {
-        throw new Error("No window available for folder dialog")
+        return { success: false as const, reason: "no-window" as const }
       }
 
       if (!window.isFocused()) {
@@ -208,35 +237,102 @@ export const projectsRouter = router({
       }
 
       const result = await dialog.showOpenDialog(window, {
-        properties: ["openDirectory", "createDirectory"],
-        title: "Relink Project Folder",
-        buttonLabel: "Use Folder",
+        properties: ["openDirectory"],
+        title: `Relink ${project.name}`,
+        buttonLabel: "Use folder",
       })
 
-      if (result.canceled || result.filePaths.length === 0) {
-        return null
+      if (result.canceled || !result.filePaths[0]) {
+        return { success: false as const, reason: "canceled" as const }
       }
 
-      const folderPath = result.filePaths[0]!
+      const folderPath = result.filePaths[0]!.trim()
+      const folderName = basename(folderPath).trim()
+      const previousProjectPath = project.path.trim()
+      const existingProject = db
+        .select()
+        .from(projects)
+        .where(eq(projects.path, folderPath))
+        .get()
       const gitInfo = await getGitRemoteInfo(folderPath)
-      const db = getDatabase()
 
-      return withPathStatus(
-        db
+      let targetProjectId = project.id
+      let updatedProject = project
+
+      if (existingProject && existingProject.id !== project.id) {
+        targetProjectId = existingProject.id
+        updatedProject = db
           .update(projects)
           .set({
-            name: basename(folderPath),
-            path: folderPath,
+            updatedAt: new Date(),
             gitRemoteUrl: gitInfo.remoteUrl,
             gitProvider: gitInfo.provider,
             gitOwner: gitInfo.owner,
             gitRepo: gitInfo.repo,
-            updatedAt: new Date(),
           })
-          .where(eq(projects.id, input.id))
+          .where(eq(projects.id, existingProject.id))
           .returning()
-          .get(),
-      )
+          .get() || existingProject
+      } else {
+        const shouldRenameProject =
+          project.name.trim() === basename(previousProjectPath) ||
+          project.name.trim() === basename(previousProjectPath.trim())
+
+        updatedProject = db
+          .update(projects)
+          .set({
+            name: shouldRenameProject ? folderName : project.name.trim(),
+            path: folderPath,
+            updatedAt: new Date(),
+            gitRemoteUrl: gitInfo.remoteUrl,
+            gitProvider: gitInfo.provider,
+            gitOwner: gitInfo.owner,
+            gitRepo: gitInfo.repo,
+          })
+          .where(eq(projects.id, project.id))
+          .returning()
+          .get() || project
+
+        const localChatsToRelink = db
+          .select({ id: chats.id, worktreePath: chats.worktreePath })
+          .from(chats)
+          .where(eq(chats.projectId, project.id))
+          .all()
+          .filter((candidate) => {
+            const normalizedWorktree = candidate.worktreePath?.trim()
+            return (
+              !normalizedWorktree ||
+              normalizedWorktree === previousProjectPath
+            )
+          })
+
+        if (localChatsToRelink.length > 0) {
+          db.update(chats)
+            .set({
+              worktreePath: folderPath,
+              updatedAt: new Date(),
+            })
+            .where(inArray(chats.id, localChatsToRelink.map((candidate) => candidate.id)))
+            .run()
+        }
+      }
+
+      const updatedChat = db
+        .update(chats)
+        .set({
+          projectId: targetProjectId,
+          worktreePath: folderPath,
+          updatedAt: new Date(),
+        })
+        .where(eq(chats.id, chat.id))
+        .returning()
+        .get()
+
+      return {
+        success: true as const,
+        project: updatedProject,
+        chat: updatedChat,
+      }
     }),
 
   /**

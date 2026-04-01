@@ -14,6 +14,7 @@ The requested `9router` endpoint is OpenAI-compatible and also requires fixed `H
 - Replace Claude Code SDK entirely for all providers.
 - Add a generic provider marketplace or arbitrary protocol plugins.
 - Rewrite the renderer chat pipeline.
+- Add new provider switcher flows or broader preset management in this change.
 
 ## Decisions
 - Decision: Introduce provider transport metadata in saved config.
@@ -28,12 +29,15 @@ The requested `9router` endpoint is OpenAI-compatible and also requires fixed `H
 - Decision: Treat the `9router` preset as OpenAI-compatible with fixed headers.
   - Why: This matches the supplied working OpenClaw configuration.
 
+- Decision: Gate full tool-calling support on verified upstream behavior.
+  - Why: The main technical uncertainty is whether `9router` returns OpenAI-compatible `tool_calls` consistently enough for parity with the existing Claude path.
+
 ## Risks / Trade-offs
 - Streaming event formats differ between Anthropic and OpenAI-compatible APIs.
   - Mitigation: Normalize adapter output into the existing UI chunk format before emission.
 
 - Tool calling support may differ from the Claude SDK path.
-  - Mitigation: Scope the first adapter to text generation compatibility for provider-backed chat completion, and document any unsupported tool behavior if encountered.
+  - Mitigation: Verify `tool_calls` support first. If the endpoint does not support it reliably, ship text-only routing first and split tool calling into a follow-up change.
 
 - Two execution paths increase maintenance cost.
   - Mitigation: Keep a small adapter surface and share downstream message persistence/emission code where possible.
@@ -42,8 +46,9 @@ The requested `9router` endpoint is OpenAI-compatible and also requires fixed `H
 1. Extend provider config with transport metadata.
 2. Detect `9router` as OpenAI-compatible.
 3. Add main-process adapter branch for OpenAI-compatible requests and streaming.
-4. Validate that ZAI still routes through the Anthropic-compatible branch.
+4. Add stream-normalization tests before integration.
+5. Validate that ZAI still routes through the Anthropic-compatible branch.
 
 ## Open Questions
 - Whether `9router` expects `/chat/completions` or `/completions` as the primary endpoint for the `gpt` model.
-- Whether tool calling is required immediately on the OpenAI-compatible path or text-only compatibility is sufficient for the initial version.
+- Whether `9router` returns usable `tool_calls` responses for the models intended in GLMX.

@@ -136,6 +136,78 @@ const TWENTYFIRST_LIGHT: VSCodeFullTheme = {
   },
 }
 
+/**
+ * Code King - premium dark orange theme for GLMX
+ * Based on the approved brand palette:
+ * - Primary: #E67E22
+ * - Main BG: #0F1115
+ * - Surface BG: #1A1D23
+ */
+const CODE_KING_DARK: VSCodeFullTheme = {
+  id: "code-king-dark",
+  name: "Code King",
+  type: "dark",
+  source: "builtin",
+  colors: {
+    // Backgrounds
+    "editor.background": "#0F1115",
+    "editorPane.background": "#0F1115",
+    "editor.foreground": "#FFFFFF",
+    "foreground": "#FFFFFF",
+    "sideBar.background": "#1A1D23",
+    "sideBar.foreground": "#B3BAC6",
+    "sideBar.border": "#2A2F3A",
+    "activityBar.background": "#1A1D23",
+    "activityBar.foreground": "#FFFFFF",
+    "panel.background": "#1A1D23",
+    "panel.border": "#2A2F3A",
+    "tab.activeBackground": "#22262F",
+    "tab.inactiveBackground": "#1A1D23",
+    "tab.inactiveForeground": "#7A8291",
+    "editorGroupHeader.tabsBackground": "#1A1D23",
+    "dropdown.background": "#22262F",
+    "dropdown.foreground": "#FFFFFF",
+    "input.background": "#22262F",
+    "input.border": "#3A404D",
+    "input.foreground": "#FFFFFF",
+
+    // Brand and interactive
+    "focusBorder": "#E67E22",
+    "textLink.foreground": "#E67E22",
+    "textLink.activeForeground": "#D35400",
+    "list.activeSelectionBackground": "#E67E222E", // ~18% opacity
+    "list.hoverBackground": "#E67E221F", // ~12% opacity
+    "editor.selectionBackground": "#E67E2230",
+    "editorLineNumber.foreground": "#6B7280",
+    "descriptionForeground": "#B3BAC6",
+    "errorForeground": "#EF4444",
+    "button.background": "#E67E22",
+    "button.foreground": "#FFFFFF",
+    "button.secondaryBackground": "#2A2F3A",
+    "button.secondaryForeground": "#FFFFFF",
+
+    // Terminal
+    "terminal.background": "#0F1115",
+    "terminal.foreground": "#FFFFFF",
+    "terminal.ansiBlack": "#1A1D23",
+    "terminal.ansiRed": "#EF4444",
+    "terminal.ansiGreen": "#4CAF50",
+    "terminal.ansiYellow": "#FACC15",
+    "terminal.ansiBlue": "#60A5FA",
+    "terminal.ansiMagenta": "#C084FC",
+    "terminal.ansiCyan": "#22D3EE",
+    "terminal.ansiWhite": "#FFFFFF",
+    "terminal.ansiBrightBlack": "#6B7280",
+    "terminal.ansiBrightRed": "#F87171",
+    "terminal.ansiBrightGreen": "#86EFAC",
+    "terminal.ansiBrightYellow": "#FDE047",
+    "terminal.ansiBrightBlue": "#93C5FD",
+    "terminal.ansiBrightMagenta": "#D8B4FE",
+    "terminal.ansiBrightCyan": "#67E8F9",
+    "terminal.ansiBrightWhite": "#FFFFFF",
+  },
+}
+
 
 /**
  * Vitesse Dark theme colors
@@ -915,6 +987,8 @@ export const BUILTIN_THEMES: VSCodeFullTheme[] = [
   // 21st Default themes (first)
   TWENTYFIRST_DARK,
   TWENTYFIRST_LIGHT,
+  // GLMX signature
+  CODE_KING_DARK,
   // Cursor themes
   CURSOR_DARK,
   CURSOR_LIGHT,

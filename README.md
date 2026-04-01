@@ -1,6 +1,6 @@
 # GLMX
 
-`GLMX` is a `ZAI Agent` desktop fork focused on running the local coding agent workflow with ZAI-backed GLM models.
+`GLMX` is a `ZAI Agent` desktop fork focused on running the local coding agent workflow with Z.AI-backed GLM models through the Claude Code-compatible route.
 
 This fork keeps the core desktop experience from the upstream app:
 
@@ -34,6 +34,12 @@ The app writes these defaults unless you change them in Settings:
 - Heavy model: `glm-4.7`
 - Standard model: `glm-4.7`
 - Fast model: `glm-4.5-air`
+
+For GLM Coding Plan usage, keep the same Base URL and remap the three Claude Code slots to the GLM family you want, for example:
+
+- Heavy model: `glm-5.1`
+- Standard model: `glm-5`
+- Fast model: `glm-5-turbo`
 
 ## First Launch Flow
 

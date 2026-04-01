@@ -3,8 +3,8 @@
 import { useAtomValue, useSetAtom } from "jotai"
 import { ChevronLeft } from "lucide-react"
 import { useEffect, useMemo, useRef } from "react"
-import { CodexLoginContent } from "../agents/components/codex-login-content"
-import { useCodexLoginFlow } from "../agents/hooks/use-codex-login-flow"
+import { OpenAIProviderLoginContent } from "../agents/components/openai-provider-login-content"
+import { useOpenAIProviderLoginFlow } from "../agents/hooks/use-openai-provider-login-flow"
 import {
   billingMethodAtom,
   codexOnboardingAuthMethodAtom,
@@ -36,7 +36,7 @@ export function CodexOnboardingPage() {
     setApiKeyInput,
     cancel,
     openUrl,
-  } = useCodexLoginFlow()
+  } = useOpenAIProviderLoginFlow()
 
   useEffect(() => {
     setMethod(onboardingMethod)
@@ -90,7 +90,7 @@ export function CodexOnboardingPage() {
       </button>
 
       <div className="w-full max-w-[480px] px-4">
-        <CodexLoginContent
+        <OpenAIProviderLoginContent
           state={state}
           method={method}
           apiKey={apiKeyInput}

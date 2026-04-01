@@ -1,63 +1,84 @@
-import { useMemo } from "react"
-import { toast } from "sonner"
+import { useEffect } from "react"
 import { Button } from "../../ui/button"
 import { trpc } from "../../../lib/trpc"
 
 export function AgentsLogsTab() {
-  const { data } = trpc.zai.getLogTail.useQuery(undefined, {
-    refetchInterval: 2000,
+  const pathsQuery = trpc.zai.getLogPaths.useQuery(undefined, {
+    refetchOnWindowFocus: false,
+    staleTime: 60_000,
   })
+  const modelTailQuery = trpc.zai.getModelLogTail.useQuery(
+    { lines: 30 },
+    {
+      refetchInterval: 3000,
+      refetchOnWindowFocus: true,
+    },
+  )
+  const mainTailQuery = trpc.zai.getMainLogTail.useQuery(
+    { lines: 15 },
+    {
+      refetchInterval: 3000,
+      refetchOnWindowFocus: true,
+    },
+  )
 
-  const logPath = data?.path ?? ""
-  const tail = data?.lines ?? []
+  const openLogFile = trpc.zai.openLogFile.useMutation()
+  const copyLogPath = trpc.zai.copyLogPath.useMutation()
 
-  const tailText = useMemo(() => tail.join("\n"), [tail])
-
-  const handleOpenLogFile = async () => {
-    if (!logPath) return
-    const result = await window.desktopApi.openPath(logPath)
-    if (result) {
-      toast.error(result)
-    }
-  }
-
-  const handleCopyPath = async () => {
-    if (!logPath) return
-    await window.desktopApi.clipboardWrite(logPath)
-    toast.success("Log path copied")
-  }
+  useEffect(() => {
+    void pathsQuery.refetch()
+  }, [pathsQuery])
 
   return (
-    <div className="px-6 py-5 space-y-5">
-      <div className="space-y-1">
+    <div className="space-y-6 px-6 py-6">
+      <div>
         <h2 className="text-lg font-semibold">Logs</h2>
-        <p className="text-sm text-muted-foreground">
-          View the main-process log file and copy the path for debugging.
+        <p className="mt-1 text-sm text-muted-foreground">
+          Inspect live model and app logs without leaving GLMX.
         </p>
       </div>
 
-      <div className="rounded-lg border border-border bg-card p-4 space-y-4">
-        <div className="space-y-1">
-          <p className="text-sm font-medium">Main log file</p>
-          <p className="text-xs text-muted-foreground break-all">
-            {logPath || "Log path unavailable"}
-          </p>
-        </div>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          variant="outline"
+          onClick={() => openLogFile.mutate({ kind: "model" })}
+        >
+          Open model.log
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() => openLogFile.mutate({ kind: "main" })}
+        >
+          Open main.log
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() => copyLogPath.mutate({ kind: "model" })}
+        >
+          Copy model.log path
+        </Button>
+      </div>
 
-        <div className="flex gap-2">
-          <Button type="button" onClick={() => void handleOpenLogFile()} disabled={!logPath}>
-            Open log file ↗
-          </Button>
-          <Button type="button" variant="outline" onClick={() => void handleCopyPath()} disabled={!logPath}>
-            Copy log path
-          </Button>
+      <div className="space-y-2">
+        <div className="text-sm font-medium">Paths</div>
+        <div className="rounded-lg border border-border bg-card p-3 font-mono text-xs text-muted-foreground">
+          <div>model: {pathsQuery.data?.model ?? "…"}</div>
+          <div>main: {pathsQuery.data?.main ?? "…"}</div>
+          <div>quality: {pathsQuery.data?.quality ?? "…"}</div>
         </div>
       </div>
 
       <div className="space-y-2">
-        <p className="text-sm font-medium">Recent lines</p>
-        <pre className="min-h-[280px] rounded-lg border border-border bg-black/70 p-4 text-xs leading-5 text-zinc-200 overflow-x-auto whitespace-pre-wrap">
-          {tailText || "No log lines yet."}
+        <div className="text-sm font-medium">model.log</div>
+        <pre className="max-h-80 overflow-auto rounded-lg border border-border bg-black/80 p-3 font-mono text-xs text-zinc-100">
+          {(modelTailQuery.data ?? []).join("\n") || "No model log entries yet."}
+        </pre>
+      </div>
+
+      <div className="space-y-2">
+        <div className="text-sm font-medium">main.log</div>
+        <pre className="max-h-48 overflow-auto rounded-lg border border-border bg-black/80 p-3 font-mono text-xs text-zinc-100">
+          {(mainTailQuery.data ?? []).join("\n") || "No main log entries yet."}
         </pre>
       </div>
     </div>

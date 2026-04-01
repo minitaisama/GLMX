@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import { Minus, Square, X } from "lucide-react"
 import { Button } from "./ui/button"
+import { Logo } from "./ui/logo"
 
 /**
  * Windows title bar component for frameless windows
@@ -78,6 +79,7 @@ export function WindowsTitleBar() {
     >
       {/* Left side - App title (draggable) */}
       <div className="flex items-center gap-2 px-3 h-full">
+        <Logo className="h-4 w-4" />
         <span className="text-xs font-medium text-foreground/70">ZAI Agent</span>
       </div>
 

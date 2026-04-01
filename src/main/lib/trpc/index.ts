@@ -26,19 +26,25 @@ const t = initTRPC.context<Context>().create({
   },
 })
 
-const loggerMiddleware = t.middleware(async ({ path, type, next }) => {
-  const start = Date.now()
-  logger.trpc.debug(`→ ${type} ${path}`)
+export const middleware = t.middleware
 
+/**
+ * Middleware to log procedure calls
+ */
+export const loggerMiddleware = middleware(async ({ path, type, next }) => {
+  const start = Date.now()
+  logger.trpc.debug("request_started", { path, type })
   const result = await next()
-  const durationMs = Date.now() - start
+  const duration = Date.now() - start
 
   if (result.ok) {
-    logger.trpc.debug(`← ${path} OK (${durationMs}ms)`)
+    logger.trpc.debug("request_completed", { path, type, durationMs: duration })
   } else {
-    logger.trpc.error(`← ${path} ERROR (${durationMs}ms)`, {
+    logger.trpc.error("request_failed", {
+      path,
+      type,
+      durationMs: duration,
       error: result.error.message,
-      code: result.error.code,
     })
   }
 
@@ -46,9 +52,8 @@ const loggerMiddleware = t.middleware(async ({ path, type, next }) => {
 })
 
 /**
- * Export reusable router and procedure helpers
+ * Procedure with logging
  */
 export const router = t.router
 export const publicProcedure = t.procedure.use(loggerMiddleware)
-export const middleware = t.middleware
-export { loggerMiddleware }
+export const loggedProcedure = publicProcedure

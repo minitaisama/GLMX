@@ -6,7 +6,6 @@ import * as os from "os"
 import path from "path"
 import { z } from "zod"
 import { setConnectionMethod } from "../../analytics"
-import { logger } from "../../logger"
 import {
   buildClaudeEnv,
   checkOfflineFallback,
@@ -42,8 +41,10 @@ import {
 } from "../../mcp-auth"
 import { fetchOAuthMetadata, getMcpBaseUrl } from "../../oauth"
 import { discoverPluginMcpServers } from "../../plugins"
+import { logAgentEvent, logger } from "../../logger"
 import { publicProcedure, router } from "../index"
 import { buildAgentsOption } from "./agent-utils"
+import { resolveWorkspaceForChat } from "./chat-workspace"
 import {
   getApprovedPluginMcpServers,
   getEnabledPlugins,
@@ -415,6 +416,52 @@ function getServerStatusFromConfig(serverConfig: McpServerConfig): string {
   // HTTP server without authType - assume no auth required (public endpoint)
   // Local stdio server - also connected
   return "connected"
+}
+
+async function getMergedMcpServersForProject(projectPath: string) {
+  const config = await readClaudeConfig()
+  const dirConfig = await readClaudeDirConfig()
+
+  // Merged global servers from all user-level sources
+  const globalServers = await getMergedGlobalMcpServers(config, dirConfig)
+
+  // Per-project servers from config files
+  const projectConfigServers = await getMergedLocalProjectMcpServers(
+    projectPath,
+    config,
+    dirConfig,
+  )
+
+  // .mcp.json from project root
+  const projectMcpJsonServers = await readProjectMcpJsonCached(projectPath)
+
+  // Merge: project config > .mcp.json > global
+  const merged: Record<string, McpServerConfig> = {
+    ...globalServers,
+    ...projectMcpJsonServers,
+    ...projectConfigServers,
+  }
+
+  // Add plugin MCP servers (enabled + approved only)
+  const [enabledPluginSources, pluginMcpConfigs, approvedServers] =
+    await Promise.all([
+      getEnabledPlugins(),
+      discoverPluginMcpServers(),
+      getApprovedPluginMcpServers(),
+    ])
+
+  for (const pluginConfig of pluginMcpConfigs) {
+    if (!enabledPluginSources.includes(pluginConfig.pluginSource)) continue
+    for (const [name, serverConfig] of Object.entries(pluginConfig.mcpServers)) {
+      if (merged[name]) continue
+      const identifier = `${pluginConfig.pluginSource}:${name}`
+      if (approvedServers.includes(identifier)) {
+        merged[name] = serverConfig
+      }
+    }
+  }
+
+  return merged
 }
 
 const MCP_FETCH_TIMEOUT_MS = 40_000
@@ -795,28 +842,34 @@ export const claudeRouter = router({
    */
   chat: publicProcedure
     .input(
-      z.object({
-        subChatId: z.string(),
-        chatId: z.string(),
-        prompt: z.string(),
-        cwd: z.string(),
-        projectPath: z.string().optional(), // Original project path for MCP config lookup
-        mode: z.enum(["plan", "agent"]).default("agent"),
-        sessionId: z.string().optional(),
-        model: z.string().optional(),
-        customConfig: z
-          .object({
-            model: z.string().min(1),
-            token: z.string().min(1),
-            baseUrl: z.string().min(1),
-          })
-          .optional(),
-        maxThinkingTokens: z.number().optional(), // Enable extended thinking
-        images: z.array(imageAttachmentSchema).optional(), // Image attachments
-        historyEnabled: z.boolean().optional(),
-        offlineModeEnabled: z.boolean().optional(), // Whether offline mode (Ollama) is enabled in settings
-        enableTasks: z.boolean().optional(), // Enable task management tools (TodoWrite, Task agents)
-      }),
+      z
+        .object({
+          subChatId: z.string(),
+          chatId: z.string(),
+          prompt: z.string(),
+          cwd: z.string(),
+          projectPath: z.string().optional(), // Original project path for MCP config lookup
+          mode: z.enum(["plan", "agent"]).default("agent"),
+          sessionId: z.string().optional(),
+          model: z.string().optional(),
+          customConfig: z
+            .object({
+              model: z.string().min(1),
+              token: z.string().min(1),
+              baseUrl: z.string().min(1),
+            })
+            .optional(),
+          maxThinkingTokens: z.number().optional(), // Enable extended thinking
+          images: z.array(imageAttachmentSchema).optional(), // Image attachments
+          historyEnabled: z.boolean().optional(),
+          offlineModeEnabled: z.boolean().optional(), // Whether offline mode (Ollama) is enabled in settings
+          enableTasks: z.boolean().optional(), // Enable task management tools (TodoWrite, Task agents)
+        })
+        .transform((value) => ({
+          ...value,
+          cwd: value.cwd.trim(),
+          projectPath: value.projectPath?.trim() || undefined,
+        })),
     )
     .subscription(({ input }) => {
       return observable<UIMessageChunk>((emit) => {
@@ -838,11 +891,21 @@ export const claudeRouter = router({
         let lastChunkType = ""
         let firstTokenLogged = false
         let toolCalls = 0
+        let effectiveCwd = input.cwd
+        let effectiveProjectPath = input.projectPath || input.cwd
         // Shared sessionId for cleanup to save on abort
         let currentSessionId: string | null = null
+        let sessionLoggedDone = false
         console.log(
           `[SD] M:START sub=${subId} stream=${streamId.slice(-8)} mode=${input.mode}`,
         )
+        logger.agent.info("session_started", {
+          sessionId: input.subChatId,
+          chatId: input.chatId,
+          projectPath: input.projectPath || input.cwd,
+          provider: input.customConfig?.baseUrl ? "custom" : "zai",
+          model: input.customConfig?.model || input.model || "default",
+        })
 
         // Track if observable is still active (not unsubscribed)
         let isObservableActive = true
@@ -868,6 +931,22 @@ export const claudeRouter = router({
           }
         }
 
+        const logSessionEnd = (
+          event: "session_ended" | "session_crashed",
+          payload: Record<string, unknown>,
+        ) => {
+          if (sessionLoggedDone) return
+          sessionLoggedDone = true
+          const logPayload = {
+            sessionId: currentSessionId || input.subChatId,
+            chatId: input.chatId,
+            subChatId: input.subChatId,
+            durationMs: Date.now() - streamStart,
+            ...payload,
+          }
+          logAgentEvent(event, logPayload)
+        }
+
         // Helper to emit error to frontend
         const emitError = (error: unknown, context: string) => {
           const errorMessage =
@@ -885,7 +964,7 @@ export const claudeRouter = router({
             ...(process.env.NODE_ENV !== "production" && {
               debugInfo: {
                 context,
-                cwd: input.cwd,
+                cwd: effectiveCwd,
                 mode: input.mode,
                 PATH: process.env.PATH?.slice(0, 200),
               },
@@ -895,6 +974,36 @@ export const claudeRouter = router({
 
         ;(async () => {
           try {
+            const resolvedWorkspace = resolveWorkspaceForChat(
+              input.chatId,
+              input.cwd,
+              input.projectPath,
+            )
+
+            if (resolvedWorkspace) {
+              input.cwd = resolvedWorkspace.cwd
+              input.projectPath = resolvedWorkspace.projectPath
+            }
+
+            try {
+              await fs.stat(input.cwd)
+            } catch {
+              safeEmit({
+                type: "error",
+                errorText: `Invalid local workspace: Local workspace path does not exist: ${input.cwd}`,
+                debugInfo: {
+                  context: "Invalid local workspace",
+                  category: "INVALID_LOCAL_WORKSPACE",
+                  cwd: input.cwd,
+                  mode: input.mode,
+                  projectPath: input.projectPath,
+                },
+              } as UIMessageChunk)
+              safeEmit({ type: "finish" } as UIMessageChunk)
+              safeComplete()
+              return
+            }
+
             const db = getDatabase()
 
             // 1. Get existing messages from DB
@@ -920,6 +1029,56 @@ export const claudeRouter = router({
               ? lastAssistantMsg?.metadata?.sdkMessageUuid || null
               : null
             const historyEnabled = input.historyEnabled === true
+
+            const cwdCandidates = [
+              input.cwd,
+              input.cwd.trimEnd(),
+              input.projectPath,
+              input.projectPath?.trimEnd(),
+            ].filter((value, index, values): value is string =>
+              Boolean(value) && values.indexOf(value) === index,
+            )
+
+            let resolvedExistingDir: string | null = null
+            for (const candidate of cwdCandidates) {
+              try {
+                const stats = await fs.stat(candidate)
+                if (stats.isDirectory()) {
+                  resolvedExistingDir = candidate
+                  break
+                }
+              } catch {
+                // Try next candidate
+              }
+            }
+
+            if (!resolvedExistingDir) {
+              emitError(
+                new Error(
+                  `Workspace path not found: ${input.cwd}. Relink the workspace folder and try again.`,
+                ),
+                "Workspace folder missing",
+              )
+              safeEmit({ type: "finish" } as UIMessageChunk)
+              safeComplete()
+              return
+            }
+
+            effectiveCwd = resolvedExistingDir
+            effectiveProjectPath =
+              [input.projectPath, input.projectPath?.trimEnd(), resolvedExistingDir].find(
+                Boolean,
+              ) || resolvedExistingDir
+
+            if (effectiveCwd !== input.cwd) {
+              logger.session.warn("Resolved missing working directory", {
+                originalCwd: input.cwd,
+                resolvedCwd: effectiveCwd,
+                projectPath: input.projectPath || null,
+                chatId: input.chatId,
+                subChatId: input.subChatId,
+              })
+            }
 
             // Clear shouldForkResume flag after reading (consumed once) and persist to DB
             if (shouldForkResume) {
@@ -1056,7 +1215,7 @@ export const claudeRouter = router({
             // Build agents option for SDK (proper registration via options.agents)
             const agentsOption = await buildAgentsOption(
               agentMentions,
-              input.cwd,
+              effectiveCwd,
             )
 
             // Log if agents were mentioned
@@ -1275,7 +1434,7 @@ export const claudeRouter = router({
                 const stats = await fs.stat(claudeJsonSource).catch(() => null)
                 const currentMtime = stats?.mtimeMs ?? 0
                 const cached = mcpConfigCache.get(claudeJsonSource)
-                const lookupPath = input.projectPath || input.cwd
+                const lookupPath = effectiveProjectPath || effectiveCwd
 
                 // Get or refresh cached config
                 let claudeConfig: any
@@ -1449,7 +1608,7 @@ export const claudeRouter = router({
               input.sessionId || existingSessionId || undefined
 
             // DEBUG: Session resume path tracing
-            const expectedSanitizedCwd = input.cwd.replace(/[/.]/g, "-")
+            const expectedSanitizedCwd = effectiveCwd.replace(/[/.]/g, "-")
             const expectedSessionPath = path.join(
               isolatedConfigDir,
               "projects",
@@ -1458,7 +1617,7 @@ export const claudeRouter = router({
             )
             console.log(`[claude] ========== SESSION DEBUG ==========`)
             console.log(`[claude] subChatId: ${input.subChatId}`)
-            console.log(`[claude] cwd: ${input.cwd}`)
+            console.log(`[claude] cwd: ${effectiveCwd}`)
             console.log(
               `[claude] sanitized cwd (expected): ${expectedSanitizedCwd}`,
             )
@@ -1477,7 +1636,7 @@ export const claudeRouter = router({
             console.log(`[claude] ========== END SESSION DEBUG ==========`)
 
             console.log(
-              `[SD] Query options - cwd: ${input.cwd}, projectPath: ${input.projectPath || "(not set)"}, mcpServers: ${mcpServersForSdk ? Object.keys(mcpServersForSdk).join(", ") : "(none)"}`,
+              `[SD] Query options - cwd: ${effectiveCwd}, projectPath: ${effectiveProjectPath || "(not set)"}, mcpServers: ${mcpServersForSdk ? Object.keys(mcpServersForSdk).join(", ") : "(none)"}`,
             )
             if (finalCustomConfig) {
               const redactedConfig = {
@@ -1499,9 +1658,9 @@ export const claudeRouter = router({
             logger.agent.info("Agent session starting", {
               chatId: input.chatId,
               subChatId: input.subChatId,
-              projectPath: input.projectPath || input.cwd,
+              projectPath: effectiveProjectPath || effectiveCwd,
               model: resolvedModel || finalEnv.ANTHROPIC_DEFAULT_SONNET_MODEL,
-              worktree: Boolean(input.projectPath && input.projectPath !== input.cwd),
+              worktree: Boolean(effectiveProjectPath && effectiveProjectPath !== effectiveCwd),
             })
             logger.perf.info("Claude binary spawning", {
               executablePath: claudeBinaryPath,
@@ -1568,7 +1727,7 @@ export const claudeRouter = router({
                 mcpServersForSdk &&
                 Object.keys(mcpServersForSdk).length > 0
               ) {
-                const lookupPath = input.projectPath || input.cwd
+                const lookupPath = effectiveProjectPath || effectiveCwd
                 mcpServersFiltered = await ensureMcpTokensFresh(
                   mcpServersForSdk,
                   lookupPath,
@@ -1583,7 +1742,7 @@ export const claudeRouter = router({
               console.log("[Ollama Debug] SDK Configuration:", {
                 model: resolvedModel,
                 baseUrl: finalEnv.ANTHROPIC_BASE_URL,
-                cwd: input.cwd,
+                cwd: effectiveCwd,
                 configDir: isolatedConfigDir,
                 hasAuthToken: !!finalEnv.ANTHROPIC_AUTH_TOKEN,
                 tokenPreview:
@@ -1601,7 +1760,7 @@ export const claudeRouter = router({
             // Read AGENTS.md from project root if it exists
             let agentsMdContent: string | undefined
             try {
-              const agentsMdPath = path.join(input.cwd, "AGENTS.md")
+              const agentsMdPath = path.join(effectiveCwd, "AGENTS.md")
               agentsMdContent = await fs.readFile(agentsMdPath, "utf-8")
               if (agentsMdContent.trim()) {
                 console.log(
@@ -1714,8 +1873,8 @@ ${history}
 
               const ollamaContext = `[CONTEXT]
 You are a coding assistant in OFFLINE mode (Ollama model: ${resolvedModel || "unknown"}).
-Project: ${input.projectPath || input.cwd}
-Working directory: ${input.cwd}
+Project: ${effectiveProjectPath || effectiveCwd}
+Working directory: ${effectiveCwd}
 
 IMPORTANT: When using tools, use these EXACT parameter names:
 - Read: use "file_path" (not "file")
@@ -1761,7 +1920,7 @@ ${prompt}
               prompt: finalQueryPrompt,
               options: {
                 abortController, // Must be inside options!
-                cwd: input.cwd,
+                cwd: effectiveCwd,
                 systemPrompt: systemPromptConfig,
                 // Register mentioned agents with SDK via options.agents (skip for Ollama - not supported)
                 ...(!isUsingOllama &&
@@ -2032,11 +2191,6 @@ ${prompt}
               try {
                 stream = claudeQuery(queryOptions)
               } catch (queryError) {
-                logger.agent.error("Agent spawn failed", {
-                  error: queryError instanceof Error ? queryError.message : String(queryError),
-                  executablePath: claudeBinaryPath,
-                  chatId: input.chatId,
-                })
                 console.error(
                   "[CLAUDE] ✗ Failed to create SDK query:",
                   queryError,
@@ -2117,6 +2271,10 @@ ${prompt}
                   if (!firstMessageReceived) {
                     firstMessageReceived = true
                     const timeToFirstMessage = Date.now() - streamIterationStart
+                    logger.agent.info("first_token", {
+                      sessionId: currentSessionId || input.subChatId,
+                      latencyMs: timeToFirstMessage,
+                    })
                     if (isUsingOllama) {
                       console.log(
                         `[Ollama] Time to first message: ${timeToFirstMessage}ms`,
@@ -2157,7 +2315,7 @@ ${prompt}
                       `[CLAUDE SDK ERROR] SubChat ID: ${input.subChatId}`,
                     )
                     console.error(`[CLAUDE SDK ERROR] Chat ID: ${input.chatId}`)
-                    console.error(`[CLAUDE SDK ERROR] CWD: ${input.cwd}`)
+                    console.error(`[CLAUDE SDK ERROR] CWD: ${effectiveCwd}`)
                     console.error(`[CLAUDE SDK ERROR] Mode: ${input.mode}`)
                     console.error(
                       `[CLAUDE SDK ERROR] Session ID: ${msgAny.session_id || "none"}`,
@@ -2367,20 +2525,6 @@ ${prompt}
                     }
 
                     // Accumulate based on chunk type
-                    if (
-                      !firstTokenLogged &&
-                      (chunk.type === "text-delta" ||
-                        chunk.type === "reasoning-delta" ||
-                        chunk.type === "tool-input-delta")
-                    ) {
-                      firstTokenLogged = true
-                      logger.perf.info("First token received", {
-                        latencyMs: Date.now() - streamStart,
-                        chatId: input.chatId,
-                        subChatId: input.subChatId,
-                      })
-                    }
-
                     switch (chunk.type) {
                       case "text-delta":
                         currentText += chunk.delta
@@ -2392,11 +2536,10 @@ ${prompt}
                         }
                         break
                       case "tool-input-available":
-                        toolCalls++
-                        logger.agent.debug("Tool call", {
+                        logger.agent.debug("tool_called", {
+                          sessionId: currentSessionId || input.subChatId,
                           tool: chunk.toolName,
-                          input: JSON.stringify(chunk.input).slice(0, 200),
-                          chatId: input.chatId,
+                          inputPreview: JSON.stringify(chunk.input).slice(0, 200),
                         })
                         // DEBUG: Log tool calls
                         console.log(
@@ -2424,11 +2567,11 @@ ${prompt}
                         })
                         break
                       case "tool-output-available":
-                        logger.agent.debug("Tool result", {
+                        logger.agent.debug("tool_result", {
+                          sessionId: currentSessionId || input.subChatId,
                           toolCallId: chunk.toolCallId,
-                          durationMs: 0,
                           success: true,
-                          chatId: input.chatId,
+                          outputPreview: JSON.stringify(chunk.output).slice(0, 200),
                         })
                         const toolPart = parts.find(
                           (p) =>
@@ -2519,12 +2662,6 @@ ${prompt}
                 // This catches errors during streaming (like process exit)
                 const err = streamError as Error
                 const stderrOutput = stderrLines.join("\n")
-                logger.agent.error("Agent crashed", {
-                  error: err.message,
-                  signal: abortController.signal.aborted ? "aborted" : null,
-                  chatId: input.chatId,
-                  stderr: stderrOutput.slice(0, 500),
-                })
 
                 if (isUsingOllama) {
                   console.error(`[Ollama] ===== STREAM ERROR =====`)
@@ -2565,6 +2702,19 @@ ${prompt}
                 } else if (err.message?.includes("exited with code")) {
                   errorContext = "Claude Code process crashed"
                   errorCategory = "PROCESS_CRASH"
+
+                  // Improve diagnostics for empty/non-git workspaces:
+                  // Claude can exit with code 1 and no stderr when the attached
+                  // folder is not a valid git workspace.
+                  if (!stderrOutput) {
+                    try {
+                      await fs.stat(path.join(input.cwd, ".git"))
+                    } catch {
+                      errorContext =
+                        "This chat is attached to a folder that is not a local git workspace. Select a valid repository folder or clone the repository first."
+                      errorCategory = "INVALID_WORKSPACE"
+                    }
+                  }
                 } else if (err.message?.includes("ENOENT")) {
                   errorContext = "Required executable not found in PATH"
                   errorCategory = "EXECUTABLE_NOT_FOUND"
@@ -2607,7 +2757,7 @@ ${prompt}
                       },
                       extra: {
                         context: errorContext,
-                        cwd: input.cwd,
+                        cwd: effectiveCwd,
                         stderr: stderrOutput || "(no stderr captured)",
                         chatId: input.chatId,
                         subChatId: input.subChatId,
@@ -2628,12 +2778,19 @@ ${prompt}
                     debugInfo: {
                       context: errorContext,
                       category: errorCategory,
-                      cwd: input.cwd,
+                      cwd: effectiveCwd,
                       mode: input.mode,
                       stderr: stderrOutput || "(no stderr captured)",
                     },
                   } as UIMessageChunk)
                 }
+
+                logSessionEnd("session_crashed", {
+                  error: err.message,
+                  exitCode: 1,
+                  totalChunks: chunkCount,
+                  category: errorCategory,
+                })
 
                 // ALWAYS save accumulated parts before returning (even on abort/error)
                 console.log(
@@ -2665,9 +2822,9 @@ ${prompt}
                     .run()
 
                   // Create snapshot stash for rollback support (on error)
-                  if (historyEnabled && metadata.sdkMessageUuid && input.cwd) {
+                  if (historyEnabled && metadata.sdkMessageUuid && effectiveCwd) {
                     await createRollbackStash(
-                      input.cwd,
+                      effectiveCwd,
                       metadata.sdkMessageUuid,
                     )
                   }
@@ -2759,19 +2916,11 @@ ${prompt}
               .run()
 
             // Create snapshot stash for rollback support
-            if (historyEnabled && metadata.sdkMessageUuid && input.cwd) {
-              await createRollbackStash(input.cwd, metadata.sdkMessageUuid)
+            if (historyEnabled && metadata.sdkMessageUuid && effectiveCwd) {
+              await createRollbackStash(effectiveCwd, metadata.sdkMessageUuid)
             }
 
             const duration = ((Date.now() - streamStart) / 1000).toFixed(1)
-            logger.agent.info("Agent session ended", {
-              chatId: input.chatId,
-              subChatId: input.subChatId,
-              durationMs: Date.now() - streamStart,
-              totalTokens: metadata?.totalTokens ?? null,
-              exitCode: 0,
-              toolCalls,
-            })
             console.log(
               `[SD] M:END sub=${subId} reason=ok n=${chunkCount} last=${lastChunkType} t=${duration}s`,
             )
@@ -2781,19 +2930,22 @@ ${prompt}
               // Keep protocol invariant for consumers that wait for finish.
               safeEmit({ type: "finish" } as UIMessageChunk)
             }
+            logSessionEnd("session_ended", {
+              exitCode: 0,
+              totalChunks: chunkCount,
+            })
             safeComplete()
           } catch (error) {
             const duration = ((Date.now() - streamStart) / 1000).toFixed(1)
-            logger.agent.error("Agent session ended with unexpected error", {
-              chatId: input.chatId,
-              subChatId: input.subChatId,
-              durationMs: Date.now() - streamStart,
-              error: error instanceof Error ? error.message : String(error),
-            })
             console.log(
               `[SD] M:END sub=${subId} reason=unexpected_error n=${chunkCount} t=${duration}s`,
             )
             emitError(error, "Unexpected error")
+            logSessionEnd("session_crashed", {
+              error: error instanceof Error ? error.message : String(error),
+              exitCode: 1,
+              totalChunks: chunkCount,
+            })
             safeEmit({ type: "finish" } as UIMessageChunk)
             safeComplete()
           } finally {
@@ -2833,47 +2985,7 @@ ${prompt}
     .input(z.object({ projectPath: z.string() }))
     .query(async ({ input }) => {
       try {
-        const config = await readClaudeConfig()
-        const dirConfig = await readClaudeDirConfig()
-
-        // Merged global servers from all user-level sources
-        const globalServers = await getMergedGlobalMcpServers(config, dirConfig)
-
-        // Per-project servers from config files
-        const projectConfigServers = await getMergedLocalProjectMcpServers(input.projectPath, config, dirConfig)
-
-        // .mcp.json from project root
-        const projectMcpJsonServers = await readProjectMcpJsonCached(input.projectPath)
-
-        // Merge: project config > .mcp.json > global
-        const merged = {
-          ...globalServers,
-          ...projectMcpJsonServers,
-          ...projectConfigServers,
-        }
-
-        // Add plugin MCP servers (enabled + approved only)
-        const [enabledPluginSources, pluginMcpConfigs, approvedServers] =
-          await Promise.all([
-            getEnabledPlugins(),
-            discoverPluginMcpServers(),
-            getApprovedPluginMcpServers(),
-          ])
-
-        for (const pluginConfig of pluginMcpConfigs) {
-          if (!enabledPluginSources.includes(pluginConfig.pluginSource))
-            continue
-          for (const [name, serverConfig] of Object.entries(
-            pluginConfig.mcpServers,
-          )) {
-            if (!merged[name]) {
-              const identifier = `${pluginConfig.pluginSource}:${name}`
-              if (approvedServers.includes(identifier)) {
-                merged[name] = serverConfig
-              }
-            }
-          }
-        }
+        const merged = await getMergedMcpServersForProject(input.projectPath)
 
         // Convert to array format - determine status from config (no caching)
         const mcpServers = Object.entries(merged).map(
@@ -2898,6 +3010,79 @@ ${prompt}
           projectPath: input.projectPath,
           error: String(error),
         }
+      }
+    }),
+
+  /**
+   * Test configured MCP servers with live probe.
+   * Uses real tool discovery (HTTP/stdio) so UI can show Configured vs Live status.
+   */
+  testMcpServers: publicProcedure
+    .input(z.object({ projectPath: z.string() }))
+    .mutation(async ({ input }) => {
+      const projectPath = input.projectPath.trim()
+      if (!projectPath) {
+        throw new Error("Project path is required")
+      }
+
+      const merged = await getMergedMcpServersForProject(projectPath)
+      const entries = Object.entries(merged)
+
+      const results = await Promise.all(
+        entries.map(async ([name, serverConfig]) => {
+          let status = getServerStatusFromConfig(serverConfig)
+          let error: string | undefined
+          let toolCount = 0
+
+          try {
+            const tools = await fetchToolsForServer(serverConfig)
+            toolCount = tools.length
+            const cacheKey = mcpCacheKey(projectPath, name)
+            const headers = serverConfig.headers as
+              | Record<string, string>
+              | undefined
+
+            if (toolCount > 0) {
+              status = "connected"
+              workingMcpServers.set(cacheKey, true)
+            } else {
+              let needsAuth = false
+              if (serverConfig.url) {
+                try {
+                  const baseUrl = getMcpBaseUrl(serverConfig.url)
+                  const metadata = await fetchOAuthMetadata(baseUrl)
+                  needsAuth = !!metadata?.authorization_endpoint
+                } catch {
+                  // ignore metadata probe failures; fallback to generic failure
+                }
+              } else if (
+                serverConfig.authType === "oauth" ||
+                serverConfig.authType === "bearer"
+              ) {
+                needsAuth = true
+              }
+
+              if (needsAuth && !headers?.Authorization) {
+                status = "needs-auth"
+              } else {
+                status = "failed"
+                error = "No tools discovered or server unreachable"
+              }
+              workingMcpServers.set(cacheKey, false)
+            }
+          } catch (err) {
+            status = "failed"
+            error = err instanceof Error ? err.message : String(err)
+            workingMcpServers.set(mcpCacheKey(projectPath, name), false)
+          }
+
+          return { name, status, toolCount, error }
+        }),
+      )
+
+      return {
+        testedAt: new Date().toISOString(),
+        servers: results,
       }
     }),
 

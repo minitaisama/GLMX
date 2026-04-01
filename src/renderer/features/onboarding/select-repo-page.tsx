@@ -11,120 +11,65 @@ import { trpc } from "../../lib/trpc"
 import { selectedProjectAtom } from "../agents/atoms"
 
 export function SelectRepoPage() {
-  const [selectedProject, setSelectedProject] = useAtom(selectedProjectAtom)
+  const [, setSelectedProject] = useAtom(selectedProjectAtom)
   const [showClonePage, setShowClonePage] = useState(false)
   const [githubUrl, setGithubUrl] = useState("")
 
   // Get tRPC utils for cache management
   const utils = trpc.useUtils()
 
-  // Open folder mutation
-  const openFolder = trpc.projects.openFolder.useMutation({
-    onSuccess: (project) => {
-      if (project) {
-        // Optimistically update the projects list cache
-        utils.projects.list.setData(undefined, (oldData) => {
-          if (!oldData) return [project]
-          const exists = oldData.some((p) => p.id === project.id)
-          if (exists) {
-            return oldData.map((p) =>
-              p.id === project.id ? { ...p, updatedAt: project.updatedAt } : p
-            )
-          }
-          return [project, ...oldData]
-        })
+  const openFolder = trpc.projects.openFolder.useMutation()
 
-        setSelectedProject({
-          id: project.id,
-          name: project.name,
-          path: project.path,
-          pathExists: project.pathExists,
-          gitRemoteUrl: project.gitRemoteUrl,
-          gitProvider: project.gitProvider as
-            | "github"
-            | "gitlab"
-            | "bitbucket"
-            | null,
-          gitOwner: project.gitOwner,
-          gitRepo: project.gitRepo,
-        })
+  const cloneFromGitHub = trpc.projects.cloneFromGitHub.useMutation()
+
+  const syncSelectedProject = async (project: NonNullable<Awaited<ReturnType<typeof openFolder.mutateAsync>>>) => {
+    utils.projects.list.setData(undefined, (oldData) => {
+      if (!oldData) return [project]
+      const exists = oldData.some((p) => p.id === project.id)
+      if (exists) {
+        return oldData.map((p) =>
+          p.id === project.id ? { ...p, updatedAt: project.updatedAt } : p
+        )
       }
-    },
-  })
+      return [project, ...oldData]
+    })
 
-  // Clone from GitHub mutation
-  const cloneFromGitHub = trpc.projects.cloneFromGitHub.useMutation({
-    onSuccess: (project) => {
-      if (project) {
-        utils.projects.list.setData(undefined, (oldData) => {
-          if (!oldData) return [project]
-          const exists = oldData.some((p) => p.id === project.id)
-          if (exists) {
-            return oldData.map((p) =>
-              p.id === project.id ? { ...p, updatedAt: project.updatedAt } : p
-            )
-          }
-          return [project, ...oldData]
-        })
+    // Let the projects query settle before routing the rest of the app
+    // through a newly selected project.
+    await utils.projects.list.invalidate()
 
-        setSelectedProject({
-          id: project.id,
-          name: project.name,
-          path: project.path,
-          pathExists: project.pathExists,
-          gitRemoteUrl: project.gitRemoteUrl,
-          gitProvider: project.gitProvider as
-            | "github"
-            | "gitlab"
-            | "bitbucket"
-            | null,
-          gitOwner: project.gitOwner,
-          gitRepo: project.gitRepo,
-        })
-        setShowClonePage(false)
-        setGithubUrl("")
-      }
-    },
-  })
-
-  const relinkFolder = trpc.projects.relinkFolder.useMutation({
-    onSuccess: (project) => {
-      if (!project) return
-
-      utils.projects.list.setData(undefined, (oldData) => {
-        if (!oldData) return [project]
-        return oldData.map((p) => (p.id === project.id ? project : p))
-      })
-
-      setSelectedProject({
-        id: project.id,
-        name: project.name,
-        path: project.path,
-        pathExists: project.pathExists,
-        gitRemoteUrl: project.gitRemoteUrl,
-        gitProvider: project.gitProvider as
-          | "github"
-          | "gitlab"
-          | "bitbucket"
-          | null,
-        gitOwner: project.gitOwner,
-        gitRepo: project.gitRepo,
-      })
-    },
-  })
-
-  const handleOpenFolder = async () => {
-    await openFolder.mutateAsync()
+    setSelectedProject({
+      id: project.id,
+      name: project.name,
+      path: project.path,
+      gitRemoteUrl: project.gitRemoteUrl,
+      gitProvider: project.gitProvider as
+        | "github"
+        | "gitlab"
+        | "bitbucket"
+        | null,
+      gitOwner: project.gitOwner,
+      gitRepo: project.gitRepo,
+    })
   }
 
-  const handleRelinkFolder = async () => {
-    if (!selectedProject?.id) return
-    await relinkFolder.mutateAsync({ id: selectedProject.id })
+  const handleOpenFolder = async () => {
+    const project = await openFolder.mutateAsync()
+    if (project) {
+      await syncSelectedProject(project)
+    }
   }
 
   const handleCloneFromGitHub = async () => {
     if (!githubUrl.trim()) return
-    await cloneFromGitHub.mutateAsync({ repoUrl: githubUrl.trim() })
+    const project = await cloneFromGitHub.mutateAsync({
+      repoUrl: githubUrl.trim(),
+    })
+    if (project) {
+      await syncSelectedProject(project)
+      setShowClonePage(false)
+      setGithubUrl("")
+    }
   }
 
   const handleBack = () => {
@@ -233,23 +178,6 @@ export function SelectRepoPage() {
 
         {/* Content */}
         <div className="space-y-3">
-          {selectedProject ? (
-            <div className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-3 text-left">
-              <p className="text-sm font-medium text-foreground">
-                Workspace folder moved or renamed
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground break-all">
-                GLMX can&apos;t find: {selectedProject.path}
-              </p>
-              <button
-                onClick={handleRelinkFolder}
-                disabled={relinkFolder.isPending}
-                className="mt-3 inline-flex h-8 items-center rounded-md bg-foreground px-3 text-sm font-medium text-background transition-colors hover:bg-foreground/90 disabled:opacity-50"
-              >
-                {relinkFolder.isPending ? "Relinking..." : "Relink folder"}
-              </button>
-            </div>
-          ) : null}
           <button
             onClick={handleOpenFolder}
             disabled={openFolder.isPending}

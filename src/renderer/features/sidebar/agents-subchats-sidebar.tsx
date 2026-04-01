@@ -84,6 +84,11 @@ import { api } from "../../lib/mock-api"
 import { trpcClient } from "../../lib/trpc"
 import { toast } from "sonner"
 import { AgentsRenameSubChatDialog } from "../agents/components/agents-rename-subchat-dialog"
+import {
+  buildContextPreview,
+  buildRenameSuggestion,
+  extractRenameContext,
+} from "../agents/utils/rename-context"
 import { SearchCombobox } from "../../components/ui/search-combobox"
 import { SubChatContextMenu } from "../agents/ui/sub-chat-context-menu"
 import { formatTimeAgo } from "../agents/utils/format-time-ago"
@@ -314,10 +319,30 @@ export function AgentsSubChatsSidebar({
     null,
   )
   const [renameLoading, setRenameLoading] = useState(false)
+  const { data: renamingChatData } = api.agents.getAgentChat.useQuery(
+    renameDialogOpen && parentChatId ? { chatId: parentChatId } : undefined,
+    { enabled: renameDialogOpen && !!parentChatId },
+  )
   const [showTopGradient, setShowTopGradient] = useState(false)
   const [showBottomGradient, setShowBottomGradient] = useState(false)
   // Using ref instead of state to avoid re-renders on hover
   const hoveredChatIndexRef = useRef<number>(-1)
+
+  const renameDialogSuggestion = useMemo(() => {
+    if (!renamingSubChat || !renamingChatData) {
+      return { contextPreview: null, suggestedName: null }
+    }
+
+    const sourceSubChat = renamingChatData.subChats?.find(
+      (subChat) => subChat.id === renamingSubChat.id,
+    )
+    const context = extractRenameContext(sourceSubChat?.messages)
+
+    return {
+      contextPreview: buildContextPreview(context),
+      suggestedName: buildRenameSuggestion(context, renamingSubChat.name),
+    }
+  }, [renamingChatData, renamingSubChat])
   const [archiveAgentDialogOpen, setArchiveAgentDialogOpen] = useState(false)
   const [subChatToArchive, setSubChatToArchive] = useState<SubChatMeta | null>(
     null,
@@ -1923,6 +1948,9 @@ export function AgentsSubChatsSidebar({
         onSave={handleRenameSave}
         currentName={renamingSubChat?.name || ""}
         isLoading={renameLoading}
+        title="Rename thread"
+        contextPreview={renameDialogSuggestion.contextPreview}
+        suggestedName={renameDialogSuggestion.suggestedName}
       />
 
       {/* Archive Agent Confirmation Dialog */}

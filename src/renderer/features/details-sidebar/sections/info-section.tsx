@@ -8,12 +8,19 @@ import {
   GitPullRequestFilledIcon,
   ExternalLinkIcon,
 } from "@/components/ui/icons"
+import { Check, ChevronDown, Loader2 } from "lucide-react"
 import { Kbd } from "@/components/ui/kbd"
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { trpc } from "@/lib/trpc"
 import { preferredEditorAtom } from "@/lib/atoms"
 import { useResolvedHotkeyDisplay } from "@/lib/hotkeys"
@@ -127,6 +134,7 @@ export const InfoSection = memo(function InfoSection({
   isExpanded = false,
   remoteInfo,
 }: InfoSectionProps) {
+  const [branchSwitchError, setBranchSwitchError] = useState<string | null>(null)
   // Extract folder name from path
   const folderName = worktreePath?.split("/").pop() || "Unknown"
   const selectedProject = useAtomValue(selectedProjectAtom)
@@ -138,15 +146,25 @@ export const InfoSection = memo(function InfoSection({
   // Mutations
   const openInFinderMutation = trpc.external.openInFinder.useMutation()
   const openInAppMutation = trpc.external.openInApp.useMutation()
+  const trpcUtils = trpc.useUtils()
 
   // Check if this is a remote sandbox chat (no local worktree)
   const isRemoteChat = !worktreePath && !!remoteInfo
 
   // Fetch branch data directly (only for local chats)
-  const { data: branchData, isLoading: isBranchLoading } = trpc.changes.getBranches.useQuery(
+  const { data: branchData, isLoading: isBranchLoading, error: branchQueryError } = trpc.changes.getBranches.useQuery(
     { worktreePath: worktreePath || "" },
-    { enabled: !!worktreePath }
+    { enabled: !!worktreePath, retry: false, refetchOnWindowFocus: false }
   )
+  const checkoutMutation = trpc.changes.checkout.useMutation({
+    onSuccess: () => {
+      setBranchSwitchError(null)
+      void trpcUtils.changes.getBranches.invalidate({ worktreePath: worktreePath || "" })
+    },
+    onError: (error) => {
+      setBranchSwitchError(error.message || "Failed to switch branch")
+    },
+  })
 
   // Get PR status for current branch (only for local chats)
   const { data: prStatus } = trpc.chats.getPrStatus.useQuery(
@@ -161,6 +179,15 @@ export const InfoSection = memo(function InfoSection({
   // For remote chats: use remoteInfo from props
   const branchName = isRemoteChat ? remoteInfo?.branch : branchData?.current
   const pr = prStatus?.pr
+  const branchLoadError = !isRemoteChat && !!worktreePath && !isBranchLoading && !branchData
+  const branchErrorMessage = branchQueryError?.message || ""
+  const branchActionDisabledReason = !worktreePath
+    ? "This chat is not attached to a local git workspace."
+    : branchLoadError
+      ? (branchErrorMessage.includes("not a git repository") || branchErrorMessage.includes("not attached")
+        ? "This chat is not attached to a local git workspace."
+        : "Branch actions are unavailable for this workspace.")
+      : null
 
   // Extract repo name from repository URL (e.g., "owner/repo" from "github.com/owner/repo")
   const repositoryName = remoteInfo?.repository
@@ -203,6 +230,13 @@ export const InfoSection = memo(function InfoSection({
         : `https://github.com/${remoteInfo.repository}`
       window.desktopApi.openExternal(repoUrl)
     }
+  }
+
+  const handleSwitchBranch = (targetBranch: string) => {
+    if (!worktreePath || checkoutMutation.isPending) return
+    if (targetBranch === branchData?.current) return
+    setBranchSwitchError(null)
+    checkoutMutation.mutate({ worktreePath, branch: targetBranch })
   }
 
   const handleOpenSandbox = () => {
@@ -264,8 +298,85 @@ export const InfoSection = memo(function InfoSection({
         />
       )}
       {/* Branch - for both local and remote */}
-      {branchName && (
+      {isRemoteChat && branchName && (
         <PropertyRow icon={GitBranchFilledIcon} label="Branch" value={branchName} copyable />
+      )}
+      {!isRemoteChat && (
+        <div className="flex flex-col">
+          <div className="flex items-center min-h-[28px]">
+            <div className="flex items-center gap-1.5 w-[100px] flex-shrink-0">
+              <GitBranchFilledIcon className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+              <span className="text-xs text-muted-foreground truncate">Branch</span>
+            </div>
+            <div className="flex-1 min-w-0 pl-2 truncate">
+              {branchActionDisabledReason ? (
+                <Tooltip delayDuration={400}>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      disabled
+                      className="text-xs text-muted-foreground/70 cursor-not-allowed rounded px-1.5 py-0.5 -ml-1.5"
+                    >
+                      Unavailable
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="text-xs">
+                    {branchActionDisabledReason}
+                  </TooltipContent>
+                </Tooltip>
+              ) : (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      disabled={checkoutMutation.isPending}
+                      className="inline-flex items-center gap-1 text-xs text-foreground cursor-pointer rounded px-1.5 py-0.5 -ml-1.5 hover:bg-accent hover:text-accent-foreground transition-colors disabled:opacity-60 disabled:cursor-wait"
+                    >
+                      {checkoutMutation.isPending ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : null}
+                      <span className="truncate max-w-[170px]">
+                        {branchName || "Select branch"}
+                      </span>
+                      <ChevronDown className="h-3 w-3 opacity-70" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="w-56 max-h-72 overflow-y-auto">
+                    {(branchData?.local || []).map((branch) => {
+                      const isCurrent = branch.branch === branchData?.current
+                      return (
+                        <DropdownMenuItem
+                          key={branch.branch}
+                          onClick={() => handleSwitchBranch(branch.branch)}
+                          disabled={checkoutMutation.isPending}
+                          className="text-xs"
+                        >
+                          <span className="truncate flex-1">{branch.branch}</span>
+                          {isCurrent ? <Check className="h-3 w-3 text-foreground/80" /> : null}
+                        </DropdownMenuItem>
+                      )
+                    })}
+                    {(branchData?.local || []).length === 0 && (
+                      <DropdownMenuItem disabled className="text-xs text-muted-foreground">
+                        No local branches found
+                      </DropdownMenuItem>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
+            </div>
+          </div>
+          {branchActionDisabledReason && (
+            <div className="pl-[108px] text-[10px] text-amber-500/90">
+              This chat is not attached to a local git workspace.
+            </div>
+          )}
+          {branchSwitchError && (
+            <div className="pl-[108px] text-[10px] text-red-400">
+              {branchSwitchError}
+            </div>
+          )}
+        </div>
       )}
       {/* PR - only for local chats */}
       {pr && (
