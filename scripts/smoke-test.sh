@@ -3,7 +3,7 @@
 # Smoke Test Script for GLMX
 # Tests: dev boot → select workspace → start chat → switch branch → MCP test
 
-set -e
+set -u
 
 echo "========================================="
 echo "GLMX Smoke Test Script"
@@ -35,6 +35,14 @@ run_test() {
     fi
 }
 
+run_build_check() {
+    if command -v bun >/dev/null 2>&1; then
+        bun run build >/dev/null 2>&1
+    else
+        npm -s run build >/dev/null 2>&1
+    fi
+}
+
 # 1. Check if dependencies are installed
 echo ""
 echo "1. Checking dependencies..."
@@ -45,13 +53,13 @@ run_test "Node modules installed" "test -d node_modules"
 # 2. Check TypeScript compilation
 echo ""
 echo "2. Checking TypeScript compilation..."
-run_test "TypeScript compiles" "bun run build 2>&1 | grep -q 'error' && exit 1 || exit 0"
+run_test "Build compiles" "run_build_check"
 
 # 3. Check critical files exist
 echo ""
 echo "3. Checking critical files..."
 run_test "Main entry exists" "test -f src/main/index.ts"
-run_test "Renderer entry exists" "test -f src/renderer/index.tsx"
+run_test "Renderer entry exists" "test -f src/renderer/main.tsx"
 run_test "Preload script exists" "test -f src/preload/index.ts"
 run_test "Database schema exists" "test -f src/main/lib/db/schema/index.ts"
 

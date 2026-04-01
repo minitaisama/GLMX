@@ -1,8 +1,3 @@
-/**
- * @jest
- * {@jest}
- */
-
 import { normalizeOpenAICompatibleModelId, getOpenAICompatibleSlotModelName, formatCodexThinkingLabel,
 } from "../models"
 
@@ -17,7 +12,7 @@ describe("Model utilities", () => {
       expect(normalizeOpenAICompatibleModelId("FAST")).toBe("fast")
       expect(normalizeOpenAICompatibleModelId("gpt-4o")).toBe("standard")
       expect(normalizeOpenAICompatibleModelId("gpt-4o-mini")).toBe("fast")
-      expect(normalizeOpenAICompatibleModelId("glm-5.1")).toBe("heavy")
+      expect(normalizeOpenAICompatibleModelId("gpt-5.1-codex-max")).toBe("heavy")
     })
 
     it("should handle null/undefined", () => {
