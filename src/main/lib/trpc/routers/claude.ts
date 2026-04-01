@@ -41,7 +41,7 @@ import {
 } from "../../mcp-auth"
 import { fetchOAuthMetadata, getMcpBaseUrl } from "../../oauth"
 import { discoverPluginMcpServers } from "../../plugins"
-import { logger } from "../../logger"
+import { logAgentEvent, logger } from "../../logger"
 import { publicProcedure, router } from "../index"
 import { buildAgentsOption } from "./agent-utils"
 import { resolveWorkspaceForChat } from "./chat-workspace"
@@ -944,11 +944,7 @@ export const claudeRouter = router({
             durationMs: Date.now() - streamStart,
             ...payload,
           }
-          if (event === "session_crashed") {
-            logger.agent.error(event, logPayload)
-            return
-          }
-          logger.agent.info(event, logPayload)
+          logAgentEvent(event, logPayload)
         }
 
         // Helper to emit error to frontend

@@ -50,6 +50,40 @@ export const logger = {
   quality: qualityLog.scope("quality"),
 }
 
+type LogLevel = "error" | "warn" | "info" | "debug"
+
+function logAtLevel(
+  scope: { error: Function; warn: Function; info: Function; debug: Function },
+  level: LogLevel,
+  message: string,
+  payload?: Record<string, unknown>,
+): void {
+  switch (level) {
+    case "error":
+      scope.error(message, payload)
+      return
+    case "warn":
+      scope.warn(message, payload)
+      return
+    case "debug":
+      scope.debug(message, payload)
+      return
+    case "info":
+    default:
+      scope.info(message, payload)
+  }
+}
+
+export function logAgentEvent(
+  event: string,
+  payload?: Record<string, unknown>,
+): void {
+  // Guard against legacy dynamic-dispatch patterns (e.g. logger.agent[event](...)).
+  // We keep level selection explicit so unknown event names can never crash logging.
+  const level: LogLevel = event === "session_crashed" ? "error" : "info"
+  logAtLevel(logger.agent, level, event, payload)
+}
+
 export const logPaths = {
   main: () => getLogFilePath("main"),
   renderer: () => getLogFilePath("renderer"),
