@@ -42,20 +42,40 @@ import {
   setIsQuitting,
 } from "./windows/main"
 import { windowManager } from "./windows/window-manager"
+import { logger } from "./lib/logger"
 
 import { IS_DEV, AUTH_SERVER_PORT } from "./constants"
 
 // Deep link protocol (must match package.json build.protocols.schemes)
 // Use different protocol in dev to avoid conflicts with production app
 const PROTOCOL = IS_DEV ? "zai-agent-dev" : "zai-agent"
+const APP_NAME = "GLMX"
+const APP_NAME_DEV = "GLMX Dev"
+
+// Set process app name as early as possible so OS integrations
+// (notifications/menus) use GLMX consistently.
+app.setName(IS_DEV ? APP_NAME_DEV : APP_NAME)
 
 // Set dev mode userData path BEFORE requestSingleInstanceLock()
 // This ensures dev and prod have separate instance locks
 if (IS_DEV) {
   const { join } = require("path")
-  const devUserData = join(app.getPath("userData"), "..", "ZAI Agent Dev")
+  const devUserData = join(app.getPath("userData"), "..", APP_NAME_DEV)
   app.setPath("userData", devUserData)
   console.log("[Dev] Using separate userData path:", devUserData)
+  logger.app.info("boot_started", {
+    version: app.getVersion(),
+    platform: process.platform,
+    profile: "dev",
+    userData: devUserData,
+  })
+} else {
+  logger.app.info("boot_started", {
+    version: app.getVersion(),
+    platform: process.platform,
+    profile: "packaged",
+    userData: app.getPath("userData"),
+  })
 }
 
 // Increase V8 old-space limit for renderer/main processes to reduce OOM frequency
@@ -163,7 +183,7 @@ export async function handleAuthCode(code: string): Promise<void> {
           win.loadURL(url.toString())
         } else {
           // Pass window ID via hash for production
-          win.loadFile(join(__dirname, "../renderer/index.html"), {
+          win.loadFile(join(app.getAppPath(), "out/renderer/index.html"), {
             hash: `windowId=${stableId}`,
           })
         }
@@ -349,7 +369,7 @@ const server = createServer((req, res) => {
 <head>
   <meta charset="UTF-8">
   <link rel="icon" type="image/png" href="/brand-logo.png">
-  <title>ZAI Agent - Authentication</title>
+  <title>GLMX - Authentication</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     :root {
@@ -431,7 +451,7 @@ const server = createServer((req, res) => {
 <head>
   <meta charset="UTF-8">
   <link rel="icon" type="image/png" href="/brand-logo.png">
-  <title>ZAI Agent - MCP Authentication</title>
+  <title>GLMX - MCP Authentication</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     :root {
@@ -601,10 +621,8 @@ if (gotTheLock) {
 
   // App ready
   app.whenReady().then(async () => {
-    // Set dev mode app name (userData path was already set before requestSingleInstanceLock)
-    // if (IS_DEV) {
-    //   app.name = "ZAI Agent Dev"
-    // }
+    logger.app.info("app_ready")
+    app.setName(IS_DEV ? APP_NAME_DEV : APP_NAME)
 
 
     // Register protocol handler (must be after app is ready)
@@ -619,10 +637,14 @@ if (gotTheLock) {
 
     // Set app user model ID for Windows (different in dev to avoid taskbar conflicts)
     if (process.platform === "win32") {
-      app.setAppUserModelId(IS_DEV ? "ai.z.agent.dev" : "ai.z.agent")
+      app.setAppUserModelId(IS_DEV ? "ai.z.glmx.dev" : "ai.z.glmx")
     }
 
-    console.log(`[App] Starting ZAI Agent${IS_DEV ? " (DEV)" : ""}...`)
+    console.log(`[App] Starting ${APP_NAME}${IS_DEV ? " (DEV)" : ""}...`)
+    logger.app.info("boot_state_changed", {
+      from: "boot_started",
+      to: "app_ready",
+    })
 
     // Verify protocol registration after app is ready
     // This helps diagnose first-install issues where the protocol isn't recognized yet
@@ -646,7 +668,7 @@ if (gotTheLock) {
 
     // Set About panel options with bundled runtime version
     app.setAboutPanelOptions({
-      applicationName: "ZAI Agent",
+      applicationName: APP_NAME,
       applicationVersion: app.getVersion(),
       version: `GLMX Runtime ${claudeCodeVersion}`,
       copyright: "Copyright © 2026 ZAI",
@@ -676,7 +698,7 @@ if (gotTheLock) {
           label: app.name,
           submenu: [
             {
-              label: "About ZAI Agent",
+              label: `About ${APP_NAME}`,
               click: () => app.showAboutPanel(),
             },
             {
@@ -709,7 +731,7 @@ if (gotTheLock) {
                     dialog.showMessageBox({
                       type: "info",
                       message: "CLI command uninstalled",
-                      detail: "The '1code' command has been removed from your PATH.",
+                      detail: "The '1code' command has been removed from your PATH for GLMX.",
                     })
                     buildMenu()
                   } else {
@@ -722,7 +744,7 @@ if (gotTheLock) {
                       type: "info",
                       message: "CLI command installed",
                       detail:
-                        "You can now use '1code .' in any terminal to open ZAI Agent in that directory.",
+                        "You can now use '1code .' in any terminal to open GLMX in that directory.",
                     })
                     buildMenu()
                   } else {
@@ -897,7 +919,7 @@ if (gotTheLock) {
           },
         },
       ])
-      app.dock.setMenu(dockMenu)
+      app.dock?.setMenu(dockMenu)
     }
 
     // Set update state and rebuild menu
@@ -1036,6 +1058,7 @@ if (gotTheLock) {
   // Cleanup before quit
   app.on("before-quit", async () => {
     console.log("[App] Shutting down...")
+    logger.app.warn("quit_requested")
     cancelAllPendingOAuth()
     await cleanupGitWatchers()
     await shutdownAnalytics()
@@ -1045,9 +1068,17 @@ if (gotTheLock) {
   // Handle uncaught exceptions
   process.on("uncaughtException", (error) => {
     console.error("[App] Uncaught exception:", error)
+    logger.app.error("boot_failed", {
+      reason: error.message,
+      state: "uncaughtException",
+    })
   })
 
   process.on("unhandledRejection", (reason, promise) => {
     console.error("[App] Unhandled rejection at:", promise, "reason:", reason)
+    logger.app.error("boot_failed", {
+      reason: reason instanceof Error ? reason.message : String(reason),
+      state: "unhandledRejection",
+    })
   })
 }
