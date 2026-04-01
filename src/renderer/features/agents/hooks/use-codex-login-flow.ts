@@ -114,7 +114,7 @@ export function useCodexLoginFlow() {
             setError(null)
             if (successToastSessionRef.current !== verificationKey) {
               successToastSessionRef.current = verificationKey
-              toast.success("Codex connected successfully", { duration: 10000 })
+              toast.success("OpenAI-compatible provider connected successfully", { duration: 10000 })
             }
             return
           }
@@ -130,9 +130,9 @@ export function useCodexLoginFlow() {
       const message = lastVerifyError
         ? toErrorMessage(
             lastVerifyError,
-            "Failed to verify Codex login status. Please retry.",
+            "Failed to verify OpenAI-compatible provider status. Please retry.",
           )
-        : "Codex login completed, but credentials were not detected. Please retry."
+        : "Provider connection completed, but credentials were not detected. Please retry."
 
       setState("error")
       setError(message)
@@ -158,7 +158,7 @@ export function useCodexLoginFlow() {
     setError(null)
     setState("success")
     await trpcUtils.codex.getIntegration.invalidate()
-    toast.success("Codex API key saved", { duration: 10000 })
+    toast.success("Provider API key saved", { duration: 10000 })
     return true
   }, [apiKeyInput, notifyError, setStoredApiKey, trpcUtils])
 
@@ -232,7 +232,7 @@ export function useCodexLoginFlow() {
       setUrl(session.url || null)
       setOutput(session.output || "")
       setError(session.error || null)
-      toast.info("Waiting for Codex sign-in in your browser")
+      toast.info("Waiting for provider sign-in in your browser")
     } catch (startError) {
       if (wasCancelled()) {
         return
@@ -240,7 +240,7 @@ export function useCodexLoginFlow() {
 
       const message = toErrorMessage(
         startError,
-        "Failed to start Codex login. Please try again.",
+        "Failed to start provider login. Please try again.",
       )
       setState("error")
       setError(message)

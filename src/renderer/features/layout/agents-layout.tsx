@@ -24,7 +24,7 @@ import { trpc } from "../../lib/trpc"
 import { useAgentsHotkeys } from "../agents/lib/agents-hotkeys-manager"
 import { toggleSearchAtom } from "../agents/search"
 import { ClaudeLoginModal } from "../../components/dialogs/claude-login-modal"
-import { CodexLoginModal } from "../../components/dialogs/codex-login-modal"
+import { OpenAIProviderLoginModal } from "../../components/dialogs/openai-provider-login-modal"
 import { TooltipProvider } from "../../components/ui/tooltip"
 import { ResizableSidebar } from "../../components/ui/resizable-sidebar"
 import { AgentsSidebar } from "../sidebar/agents-sidebar"
@@ -123,25 +123,41 @@ export function AgentsLayout() {
     if (isLoadingProjects) return selectedProject
     // After loading, validate against DB
     if (!projects) return null
-    const exists = projects.some((p) => p.id === selectedProject.id)
-    return exists ? selectedProject : null
+    const dbProject = projects.find((p) => p.id === selectedProject.id)
+    if (!dbProject) return null
+    return {
+      ...selectedProject,
+      name: dbProject.name,
+      path: dbProject.path,
+      gitRemoteUrl: dbProject.gitRemoteUrl,
+      gitProvider: dbProject.gitProvider as
+        | "github"
+        | "gitlab"
+        | "bitbucket"
+        | null,
+      gitOwner: dbProject.gitOwner,
+      gitRepo: dbProject.gitRepo,
+    }
   }, [selectedProject, projects, isLoadingProjects])
+
+  const selectedProjectId = selectedProject?.id ?? null
+  const validatedProjectId = validatedProject?.id ?? null
 
   // Clear invalid project from storage (only after loading completes)
   useEffect(() => {
     if (
-      selectedProject &&
+      selectedProjectId &&
       projects &&
       !isLoadingProjects &&
-      !validatedProject
+      !validatedProjectId
     ) {
       setSelectedProject(null)
     }
   }, [
-    selectedProject,
+    selectedProjectId,
     projects,
     isLoadingProjects,
-    validatedProject,
+    validatedProjectId,
     setSelectedProject,
   ])
 
@@ -199,12 +215,14 @@ export function AgentsLayout() {
     }
 
     // After initial load, react to project changes
-    if (validatedProject) {
-      setSidebarOpen(true)
-    } else {
+    if (validatedProjectId) {
+      if (!sidebarOpen) {
+        setSidebarOpen(true)
+      }
+    } else if (sidebarOpen) {
       setSidebarOpen(false)
     }
-  }, [validatedProject, projects, setSidebarOpen])
+  }, [validatedProjectId, projects, sidebarOpen, setSidebarOpen])
 
   // Worktree setup failures from main process
   useEffect(() => {
@@ -302,7 +320,7 @@ export function AgentsLayout() {
         }
         autoStartAuth={claudeLoginModalConfig.autoStartAuth}
       />
-      <CodexLoginModal />
+      <OpenAIProviderLoginModal />
       <div className="flex flex-col w-full h-full relative overflow-hidden bg-background select-none">
         {/* Windows Title Bar (only shown on Windows with frameless window) */}
         <WindowsTitleBar />

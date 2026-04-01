@@ -103,14 +103,16 @@ function CodexThinkingSubMenu({
   const subMenuRef = useRef<HTMLDivElement>(null)
   const [showSub, setShowSub] = useState(false)
   const [subPos, setSubPos] = useState({ top: 0, left: 0 })
-  const closeTimeout = useRef<ReturnType<typeof setTimeout>>()
+  const closeTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const scheduleClose = useCallback(() => {
     closeTimeout.current = setTimeout(() => setShowSub(false), 150)
   }, [])
 
   const cancelClose = useCallback(() => {
-    clearTimeout(closeTimeout.current)
+    if (closeTimeout.current) {
+      clearTimeout(closeTimeout.current)
+    }
   }, [])
 
   const handleTriggerEnter = useCallback(() => {
@@ -147,7 +149,11 @@ function CodexThinkingSubMenu({
   )
 
   useEffect(() => {
-    return () => clearTimeout(closeTimeout.current)
+    return () => {
+      if (closeTimeout.current) {
+        clearTimeout(closeTimeout.current)
+      }
+    }
   }, [])
 
   return (
@@ -585,7 +591,7 @@ export function AgentModelSelector({
             </>
           )}
 
-          {/* Codex thinking level selector with hover sub-menu */}
+          {/* OpenAI-compatible thinking level selector with hover sub-menu */}
           {selectedAgentId === "codex" && (() => {
             const selectedCodexModel = codex.models.find((m) => m.id === codex.selectedModelId) || codex.models[0]
             if (!selectedCodexModel) return null
@@ -652,7 +658,7 @@ export function AgentModelSelector({
 
       <CrossProviderConfirmDialog
         isOpen={confirmDialogOpen}
-        providerName={pendingProvider === "codex" ? "Codex" : "Claude Code"}
+        providerName={pendingProvider === "codex" ? "OpenAI-compatible" : "Anthropic-compatible"}
         onConfirm={handleConfirmCrossProvider}
         onClose={handleCloseConfirmDialog}
       />

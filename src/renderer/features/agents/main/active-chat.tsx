@@ -168,7 +168,7 @@ import { useHaptic } from "../hooks/use-haptic"
 import { usePastedTextFiles, type PastedTextFile } from "../hooks/use-pasted-text-files"
 import { useTextContextSelection } from "../hooks/use-text-context-selection"
 import { useToggleFocusOnCmdEsc } from "../hooks/use-toggle-focus-on-cmd-esc"
-import { ACPChatTransport } from "../lib/acp-chat-transport"
+import { OpenAICompatibleChatTransport } from "../lib/openai-compatible-chat-transport"
 import { formatHistoryForContext } from "../lib/export-chat"
 import {
   clearSubChatDraft,
@@ -182,6 +182,7 @@ import {
   toQueuedTextContext, toQueuedDiffTextContext, toQueuedPastedText, type DiffTextContext, type SelectedTextContext
 } from "../lib/queue-utils"
 import { RemoteChatTransport } from "../lib/remote-chat-transport"
+import { ENABLE_CODEX_PROVIDER } from "../lib/models"
 import {
   FileOpenProvider,
   MENTION_PREFIXES,
@@ -240,6 +241,16 @@ const selectedSubChatIdsAtom = atom(new Set<string>())
 const selectedTeamIdAtom = atom<string | null>(null)
 // import type { PlanType } from "@/lib/config/subscription-plans"
 type PlanType = string
+
+function resolveEnabledProvider(
+  provider: "claude-code" | "codex",
+): "claude-code" | "codex" {
+  if (provider === "codex" && !ENABLE_CODEX_PROVIDER) {
+    return "claude-code"
+  }
+
+  return provider
+}
 
 // Module-level scroll position cache (per subChatId, session-only)
 // Stores { scrollTop, scrollHeight, wasAtBottom } so we can restore position on tab switch
@@ -367,7 +378,7 @@ const CodexIcon = (props: React.SVGProps<SVGSVGElement>) => (
   </svg>
 )
 
-// Model options for Claude Code
+// Model options for the Anthropic-compatible transport
 const claudeModels = [
   { id: "opus", name: "Heavy slot" },
   { id: "sonnet", name: "Standard slot" },
@@ -376,9 +387,9 @@ const claudeModels = [
 
 // Agent providers
 const agents = [
-  { id: "claude-code", name: "Claude Code", hasModels: true },
+  { id: "claude-code", name: "Anthropic-Compatible", hasModels: true },
   { id: "cursor", name: "Cursor CLI", disabled: true },
-  { id: "codex", name: "OpenAI Codex", disabled: true },
+  { id: "codex", name: "OpenAI-Compatible", disabled: true },
 ]
 
 // Helper function to get agent icon
@@ -6083,6 +6094,23 @@ export function ChatView({
     }
   }, [chatId, setPendingPrMessage, setIsCreatingPr])
 
+  // Fetch branch data for diff sidebar header
+  const { data: branchData } = trpc.changes.getBranches.useQuery(
+    { worktreePath: worktreePath || "" },
+    { enabled: !!worktreePath }
+  )
+
+  const { data: isWorktreeRegistered } = trpc.changes.isWorktreeRegistered.useQuery(
+    { worktreePath: worktreePath || "" },
+    { enabled: !!worktreePath }
+  )
+
+  // Fetch git status for sync counts (pushCount, pullCount, hasUpstream)
+  const { data: gitStatus, refetch: refetchGitStatus, isLoading: isGitStatusLoading } = trpc.changes.getStatus.useQuery(
+    { worktreePath: worktreePath || "" },
+    { enabled: !!worktreePath && (isDiffSidebarOpen || isDetailsSidebarOpen), staleTime: 30000 }
+  )
+
   // Handle Commit to existing PR - sends a message to Claude to commit and push
   // selectedPaths parameter is optional - if provided, only those files will be mentioned
   const [isCommittingToPr, setIsCommittingToPr] = useState(false)
@@ -6188,23 +6216,6 @@ Make sure to preserve all functionality from both branches when resolving confli
       setPendingConflictResolutionMessage({ message, subChatId: activeSubChatId })
     }
   }, [activeSubChatId, setPendingConflictResolutionMessage])
-
-  // Fetch branch data for diff sidebar header
-  const { data: branchData } = trpc.changes.getBranches.useQuery(
-    { worktreePath: worktreePath || "" },
-    { enabled: !!worktreePath }
-  )
-
-  const { data: isWorktreeRegistered } = trpc.changes.isWorktreeRegistered.useQuery(
-    { worktreePath: worktreePath || "" },
-    { enabled: !!worktreePath }
-  )
-
-  // Fetch git status for sync counts (pushCount, pullCount, hasUpstream)
-  const { data: gitStatus, refetch: refetchGitStatus, isLoading: isGitStatusLoading } = trpc.changes.getStatus.useQuery(
-    { worktreePath: worktreePath || "" },
-    { enabled: !!worktreePath && (isDiffSidebarOpen || isDetailsSidebarOpen), staleTime: 30000 }
-  )
 
   const handleCommitChangesRefresh = useCallback(() => {
     refetchGitStatus()
@@ -6424,12 +6435,13 @@ Make sure to preserve all functionality from both branches when resolving confli
     setCurrentPlanPath(lastPlanPath)
   }, [agentSubChats, activeSubChatIdForPlan, setCurrentPlanPath])
 
+  const { data: activeProvider } = trpc.zai.getActiveProvider.useQuery()
+
   const inferProviderFromMessages = useCallback(
     (subChatId?: string): "claude-code" | "codex" => {
-      if (!subChatId) return "claude-code"
-
-      const override = subChatProviderOverrides[subChatId]
-      if (override) return override
+      const defaultProvider =
+        activeProvider?.type === "openai-compatible" ? "codex" : "claude-code"
+      if (!subChatId) return defaultProvider
 
       const subChat = ((agentChat as any)?.subChats || []).find(
         (sc: any) => sc?.id === subChatId,
@@ -6448,6 +6460,13 @@ Make sure to preserve all functionality from both branches when resolving confli
         }
       }
 
+      if (messages.length === 0) {
+        return defaultProvider
+      }
+
+      const override = subChatProviderOverrides[subChatId]
+      if (override) return resolveEnabledProvider(override)
+
       for (const message of messages) {
         const model = (message as any)?.metadata?.model
         if (typeof model !== "string") continue
@@ -6456,13 +6475,13 @@ Make sure to preserve all functionality from both branches when resolving confli
           normalizedModel.includes("codex") ||
           normalizedModel.startsWith("gpt-")
         ) {
-          return "codex"
+          return resolveEnabledProvider("codex")
         }
       }
 
-      return "claude-code"
+      return defaultProvider
     },
-    [agentChat, subChatProviderOverrides],
+    [activeProvider?.type, agentChat, subChatProviderOverrides],
   )
 
   const activeSubChatProvider = useMemo(
@@ -6471,7 +6490,7 @@ Make sure to preserve all functionality from both branches when resolving confli
   )
 
   const { data: codexMcpConfig } = trpc.codex.getAllMcpConfig.useQuery(undefined, {
-    enabled: activeSubChatProvider === "codex",
+    enabled: activeSubChatProvider === "codex" && !isDesktopApp(),
     staleTime: 5 * 60 * 1000,
   })
 
@@ -6624,10 +6643,15 @@ Make sure to preserve all functionality from both branches when resolving confli
         if (!overrideProvider) return existing
 
         const existingProvider: "claude-code" | "codex" =
-          (existing as any)?.transport instanceof ACPChatTransport
+          (existing as any)?.transport instanceof OpenAICompatibleChatTransport
             ? "codex"
             : "claude-code"
-        if (existingProvider === overrideProvider) return existing
+        if (
+          resolveEnabledProvider(existingProvider) ===
+          resolveEnabledProvider(overrideProvider)
+        ) {
+          return existing
+        }
 
         const subChatForOverride = agentSubChats.find((sc) => sc.id === subChatId)
         const rawExistingMessages = subChatForOverride?.messages
@@ -6670,7 +6694,9 @@ Make sure to preserve all functionality from both branches when resolving confli
         .allSubChats.find((sc) => sc.id === subChatId)
       const subChatMode = subChatMeta?.mode || currentMode
 
-      const chatProvider = inferProviderFromMessages(subChatId)
+      const chatProvider = resolveEnabledProvider(
+        inferProviderFromMessages(subChatId),
+      )
 
       console.log("[getOrCreateChat] Transport selection", {
         subChatId: subChatId.slice(-8),
@@ -6680,7 +6706,7 @@ Make sure to preserve all functionality from both branches when resolving confli
         worktreePath: worktreePath ? "exists" : "none",
       })
 
-      let transport: IPCChatTransport | RemoteChatTransport | ACPChatTransport | null = null
+      let transport: IPCChatTransport | RemoteChatTransport | OpenAICompatibleChatTransport | null = null
 
       if (isRemoteChat && chatSandboxUrl) {
         // Remote sandbox chat: use HTTP SSE transport
@@ -6701,8 +6727,8 @@ Make sure to preserve all functionality from both branches when resolving confli
         })
       } else if (worktreePath) {
         if (chatProvider === "codex") {
-          console.log("[getOrCreateChat] Using ACPChatTransport", { provider: chatProvider })
-          transport = new ACPChatTransport({
+          console.log("[getOrCreateChat] Using OpenAICompatibleChatTransport", { provider: chatProvider })
+          transport = new OpenAICompatibleChatTransport({
             chatId,
             subChatId,
             cwd: worktreePath,
@@ -6831,6 +6857,8 @@ Make sure to preserve all functionality from both branches when resolving confli
 
   const handleProviderChange = useCallback(
     (subChatId: string, nextProvider: "claude-code" | "codex") => {
+      const resolvedNextProvider = resolveEnabledProvider(nextProvider)
+
       // Provider switch is only allowed for brand new sub-chats.
       const activeChat = agentChatStore.get(subChatId) as any
       let messageCount = Array.isArray(activeChat?.messages)
@@ -6856,7 +6884,7 @@ Make sure to preserve all functionality from both branches when resolving confli
 
       setSubChatProviderOverrides((prev) => ({
         ...prev,
-        [subChatId]: nextProvider,
+        [subChatId]: resolvedNextProvider,
       }))
 
       // Force transport recreation with the newly selected provider.
@@ -6872,7 +6900,9 @@ Make sure to preserve all functionality from both branches when resolving confli
     const sourceSubChatId = activeSubChatId || ""
     // New sub-chats use the user's default mode preference
     const newSubChatMode = defaultAgentMode
-    const newSubChatProvider = inferProviderFromMessages(activeSubChatId || undefined)
+    const newSubChatProvider = resolveEnabledProvider(
+      inferProviderFromMessages(activeSubChatId || undefined),
+    )
 
     // Check if this is a remote sandbox chat
     const isRemoteChat = !!(agentChat as any)?.isRemote
@@ -6964,8 +6994,8 @@ Make sure to preserve all functionality from both branches when resolving confli
       newSubChatSandboxUrl,
     })
 
-    const chatProvider = newSubChatProvider
-    let newSubChatTransport: IPCChatTransport | RemoteChatTransport | ACPChatTransport | null = null
+    const chatProvider = resolveEnabledProvider(newSubChatProvider)
+    let newSubChatTransport: IPCChatTransport | RemoteChatTransport | OpenAICompatibleChatTransport | null = null
 
     if (isNewSubChatRemote && newSubChatSandboxUrl) {
       // Remote sandbox chat: use HTTP SSE transport
@@ -6982,8 +7012,8 @@ Make sure to preserve all functionality from both branches when resolving confli
       })
     } else if (worktreePath) {
       if (chatProvider === "codex") {
-        console.log("[createNewSubChat] Using ACPChatTransport", { provider: chatProvider })
-        newSubChatTransport = new ACPChatTransport({
+        console.log("[createNewSubChat] Using OpenAICompatibleChatTransport", { provider: chatProvider })
+        newSubChatTransport = new OpenAICompatibleChatTransport({
           chatId,
           subChatId: newId,
           cwd: worktreePath,

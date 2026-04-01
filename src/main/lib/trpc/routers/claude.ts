@@ -43,6 +43,7 @@ import { fetchOAuthMetadata, getMcpBaseUrl } from "../../oauth"
 import { discoverPluginMcpServers } from "../../plugins"
 import { publicProcedure, router } from "../index"
 import { buildAgentsOption } from "./agent-utils"
+import { resolveWorkspaceForChat } from "./chat-workspace"
 import {
   getApprovedPluginMcpServers,
   getEnabledPlugins,
@@ -794,28 +795,34 @@ export const claudeRouter = router({
    */
   chat: publicProcedure
     .input(
-      z.object({
-        subChatId: z.string(),
-        chatId: z.string(),
-        prompt: z.string(),
-        cwd: z.string(),
-        projectPath: z.string().optional(), // Original project path for MCP config lookup
-        mode: z.enum(["plan", "agent"]).default("agent"),
-        sessionId: z.string().optional(),
-        model: z.string().optional(),
-        customConfig: z
-          .object({
-            model: z.string().min(1),
-            token: z.string().min(1),
-            baseUrl: z.string().min(1),
-          })
-          .optional(),
-        maxThinkingTokens: z.number().optional(), // Enable extended thinking
-        images: z.array(imageAttachmentSchema).optional(), // Image attachments
-        historyEnabled: z.boolean().optional(),
-        offlineModeEnabled: z.boolean().optional(), // Whether offline mode (Ollama) is enabled in settings
-        enableTasks: z.boolean().optional(), // Enable task management tools (TodoWrite, Task agents)
-      }),
+      z
+        .object({
+          subChatId: z.string(),
+          chatId: z.string(),
+          prompt: z.string(),
+          cwd: z.string(),
+          projectPath: z.string().optional(), // Original project path for MCP config lookup
+          mode: z.enum(["plan", "agent"]).default("agent"),
+          sessionId: z.string().optional(),
+          model: z.string().optional(),
+          customConfig: z
+            .object({
+              model: z.string().min(1),
+              token: z.string().min(1),
+              baseUrl: z.string().min(1),
+            })
+            .optional(),
+          maxThinkingTokens: z.number().optional(), // Enable extended thinking
+          images: z.array(imageAttachmentSchema).optional(), // Image attachments
+          historyEnabled: z.boolean().optional(),
+          offlineModeEnabled: z.boolean().optional(), // Whether offline mode (Ollama) is enabled in settings
+          enableTasks: z.boolean().optional(), // Enable task management tools (TodoWrite, Task agents)
+        })
+        .transform((value) => ({
+          ...value,
+          cwd: value.cwd.trim(),
+          projectPath: value.projectPath?.trim() || undefined,
+        })),
     )
     .subscription(({ input }) => {
       return observable<UIMessageChunk>((emit) => {
@@ -892,6 +899,36 @@ export const claudeRouter = router({
 
         ;(async () => {
           try {
+            const resolvedWorkspace = resolveWorkspaceForChat(
+              input.chatId,
+              input.cwd,
+              input.projectPath,
+            )
+
+            if (resolvedWorkspace) {
+              input.cwd = resolvedWorkspace.cwd
+              input.projectPath = resolvedWorkspace.projectPath
+            }
+
+            try {
+              await fs.stat(input.cwd)
+            } catch {
+              safeEmit({
+                type: "error",
+                errorText: `Invalid local workspace: Local workspace path does not exist: ${input.cwd}`,
+                debugInfo: {
+                  context: "Invalid local workspace",
+                  category: "INVALID_LOCAL_WORKSPACE",
+                  cwd: input.cwd,
+                  mode: input.mode,
+                  projectPath: input.projectPath,
+                },
+              } as UIMessageChunk)
+              safeEmit({ type: "finish" } as UIMessageChunk)
+              safeComplete()
+              return
+            }
+
             const db = getDatabase()
 
             // 1. Get existing messages from DB

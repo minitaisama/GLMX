@@ -6,7 +6,7 @@ import { claudeCodeRouter } from "./claude-code"
 import { claudeSettingsRouter } from "./claude-settings"
 import { anthropicAccountsRouter } from "./anthropic-accounts"
 import { ollamaRouter } from "./ollama"
-import { codexRouter } from "./codex"
+import { openAICompatibleRouter } from "./openai-compatible"
 import { terminalRouter } from "./terminal"
 import { externalRouter } from "./external"
 import { filesRouter } from "./files"
@@ -35,7 +35,7 @@ export function createAppRouter(getWindow: () => BrowserWindow | null) {
     claudeSettings: claudeSettingsRouter,
     anthropicAccounts: anthropicAccountsRouter,
     ollama: ollamaRouter,
-    codex: codexRouter,
+    codex: openAICompatibleRouter,
     terminal: terminalRouter,
     external: externalRouter,
     files: filesRouter,

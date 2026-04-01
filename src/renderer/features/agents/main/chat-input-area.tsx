@@ -42,12 +42,9 @@ import {
   agentsSettingsDialogOpenAtom,
   anthropicOnboardingCompletedAtom,
   apiKeyOnboardingCompletedAtom,
-  codexApiKeyAtom,
-  codexOnboardingCompletedAtom,
   customClaudeConfigAtom,
   extendedThinkingEnabledAtom,
   hiddenModelsAtom,
-  normalizeCodexApiKey,
   normalizeCustomClaudeConfig,
   selectedOllamaModelAtom,
   showOfflineModeFeaturesAtom,
@@ -500,24 +497,26 @@ export const ChatInputArea = memo(function ChatInputArea({
     setSelectedSubChatModelId(selectedModel.id)
   }, [provider, selectedModel?.id, setSelectedSubChatModelId])
 
-  const storedCodexApiKey = useAtomValue(codexApiKeyAtom)
-  const hasAppCodexApiKey = Boolean(normalizeCodexApiKey(storedCodexApiKey))
   const hiddenModels = useAtomValue(hiddenModelsAtom)
 
   // Connection status for providers
   const anthropicOnboardingCompleted = useAtomValue(anthropicOnboardingCompletedAtom)
   const apiKeyOnboardingCompleted = useAtomValue(apiKeyOnboardingCompletedAtom)
-  const codexOnboardingCompleted = useAtomValue(codexOnboardingCompletedAtom)
   const { data: claudeCodeIntegration } =
     trpc.claudeCode.getIntegration.useQuery()
+  const { data: activeProvider } = trpc.zai.getActiveProvider.useQuery()
+  const { data: codexIntegration } = trpc.codex.getIntegration.useQuery()
+  const isOpenAICompatibleActive = activeProvider?.type === "openai-compatible"
+  const isOpenAITransportConnected =
+    codexIntegration?.state === "connected_api_key"
   const codexUiModels = useMemo(
     () => {
-      let models = hasAppCodexApiKey
+      let models = isOpenAITransportConnected
         ? CODEX_MODELS.filter((model) => model.id !== "gpt-5.3-codex")
         : CODEX_MODELS
       return models.filter((model) => !hiddenModels.includes(model.id))
     },
-    [hasAppCodexApiKey, hiddenModels],
+    [hiddenModels, isOpenAITransportConnected],
   )
   const selectedCodexModel = useMemo(
     () =>
@@ -1584,7 +1583,7 @@ export const ChatInputArea = memo(function ChatInputArea({
                         onThinkingChange: setThinkingEnabled,
                       }}
                       codex={{
-                        isEnabled: ENABLE_CODEX_PROVIDER,
+                        isEnabled: ENABLE_CODEX_PROVIDER && isOpenAICompatibleActive,
                         models: codexUiModels,
                         selectedModelId: selectedCodexModel.id,
                         onSelectModel: (modelId) => {
@@ -1608,7 +1607,7 @@ export const ChatInputArea = memo(function ChatInputArea({
                           setSelectedSubChatCodexThinking(thinking)
                           setLastSelectedCodexThinking(thinking)
                         },
-                        isConnected: codexOnboardingCompleted,
+                        isConnected: isOpenAITransportConnected,
                       }}
                     />
                   </div>

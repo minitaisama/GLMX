@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from 'crypto';
 import { shell } from 'electron';
+import { existsSync, readFileSync } from 'fs';
 import { createServer, type Server } from 'http';
+import { join } from 'path';
 import { URL } from 'url';
 
 export interface OAuthMetadata {
@@ -50,6 +52,25 @@ const CALLBACK_PATH = '/callback';
 // Some MCP servers (like Figma) have an allowlist - try '1code' first, fall back to 'Codex'
 const CLIENT_NAME = '1code';
 const FALLBACK_CLIENT_NAME = 'Codex';
+
+function getBrandLogoDataUri(): string {
+  const candidates = [
+    join(__dirname, '../../renderer/brand-logo.png'),
+    join(process.cwd(), 'out/renderer/brand-logo.png'),
+    join(process.cwd(), 'src/renderer/public/brand-logo.png'),
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      const buffer = readFileSync(candidate);
+      return `data:image/png;base64,${buffer.toString('base64')}`;
+    }
+  }
+
+  return '';
+}
+
+const BRAND_LOGO_DATA_URI = getBrandLogoDataUri();
 
 /**
  * Generate a styled OAuth callback page with terminal emulator aesthetic
@@ -308,14 +329,11 @@ function generateOAuthPage(options: {
     }
 
     .logo {
-      color: ${logoColor};
-      font-weight: 700;
-      font-size: 12px;
-      line-height: 1;
-      white-space: pre;
-      text-align: left;
-      text-shadow: 0 0 15px ${logoGlow};
-      letter-spacing: normal;
+      width: 72px;
+      height: 72px;
+      object-fit: contain;
+      display: block;
+      filter: drop-shadow(0 0 15px ${logoGlow});
     }
 
     .terminal-output {
@@ -474,7 +492,7 @@ function generateOAuthPage(options: {
       </div>
 
       <div class="logo-container">
-<pre class="logo"></pre>
+        <img class="logo" src="${BRAND_LOGO_DATA_URI}" alt="GLMX logo" />
       </div>
 
       <div class="terminal-output">

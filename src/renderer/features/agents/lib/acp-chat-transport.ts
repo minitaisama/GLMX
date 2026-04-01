@@ -2,13 +2,9 @@ import type { ChatTransport, UIMessage } from "ai"
 import { toast } from "sonner"
 import { normalizeCodexStreamChunk } from "../../../../shared/codex-tool-normalizer"
 import {
-  codexApiKeyAtom,
-  codexLoginModalOpenAtom,
-  codexOnboardingAuthMethodAtom,
-  codexOnboardingCompletedAtom,
-  normalizeCodexApiKey,
   sessionInfoAtom,
 } from "../../../lib/atoms"
+import { getQueryClient } from "../../../contexts/TRPCProvider"
 import { appStore } from "../../../lib/jotai-store"
 import { trpcClient } from "../../../lib/trpc"
 import {
@@ -45,15 +41,10 @@ function getStoredCodexCredentials(): {
   hasSubscription: boolean
   hasAny: boolean
 } {
-  const hasApiKey = Boolean(normalizeCodexApiKey(appStore.get(codexApiKeyAtom)))
-  const hasSubscription =
-    appStore.get(codexOnboardingCompletedAtom) &&
-    appStore.get(codexOnboardingAuthMethodAtom) === "chatgpt"
-
   return {
-    hasApiKey,
-    hasSubscription,
-    hasAny: hasApiKey || hasSubscription,
+    hasApiKey: false,
+    hasSubscription: false,
+    hasAny: false,
   }
 }
 
@@ -65,17 +56,20 @@ async function resolveCodexCredentialsForAuthError(): Promise<{
   const snapshot = getStoredCodexCredentials()
 
   let hasSubscription = false
+  let hasApiKey = snapshot.hasApiKey
   try {
     const integration = await trpcClient.codex.getIntegration.query()
-    hasSubscription = integration.state === "connected_chatgpt"
+    hasApiKey = integration.state === "connected_api_key"
+    hasSubscription = false
   } catch {
+    hasApiKey = snapshot.hasApiKey
     hasSubscription = false
   }
 
   return {
-    hasApiKey: snapshot.hasApiKey,
+    hasApiKey,
     hasSubscription,
-    hasAny: snapshot.hasApiKey || hasSubscription,
+    hasAny: hasApiKey || hasSubscription,
   }
 }
 
@@ -109,6 +103,34 @@ function getSelectedCodexModel(subChatId: string): string {
 export class ACPChatTransport implements ChatTransport<UIMessage> {
   constructor(private config: ACPChatTransportConfig) {}
 
+  private async relinkWorkspace() {
+    const result = await trpcClient.projects.relinkChatWorkspace.mutate({
+      chatId: this.config.chatId,
+    })
+
+    if (!result?.success) {
+      if (result?.reason !== "canceled") {
+        toast.error("Could not relink workspace", {
+          description: "The selected folder could not be attached to this chat.",
+        })
+      }
+      return
+    }
+
+    const queryClient = getQueryClient()
+    await Promise.all([
+      queryClient?.invalidateQueries({ queryKey: [["projects", "list"]] }),
+      queryClient?.invalidateQueries({ queryKey: [["chats", "list"]] }),
+      queryClient?.invalidateQueries({
+        queryKey: [["chats", "get"], { input: { id: this.config.chatId }, type: "query" }],
+      }),
+    ])
+
+    toast.success("Workspace relinked", {
+      description: "Send your message again and we will use the new folder.",
+    })
+  }
+
   async sendMessages(options: {
     messages: UIMessage[]
     abortSignal?: AbortSignal
@@ -135,7 +157,6 @@ export class ACPChatTransport implements ChatTransport<UIMessage> {
     if (forceNewSession) {
       forceFreshSessionSubChats.delete(this.config.subChatId)
     }
-    const codexApiKey = normalizeCodexApiKey(appStore.get(codexApiKeyAtom))
     const selectedModel = getSelectedCodexModel(this.config.subChatId)
 
     return new ReadableStream({
@@ -173,13 +194,6 @@ export class ACPChatTransport implements ChatTransport<UIMessage> {
             ...(sessionId ? { sessionId } : {}),
             ...(forceNewSession ? { forceNewSession: true } : {}),
             ...(images.length > 0 ? { images } : {}),
-            ...(codexApiKey
-              ? {
-                  authConfig: {
-                    apiKey: codexApiKey,
-                  },
-                }
-              : {}),
           },
           {
             onData: (chunk: UIMessageChunk) => {
@@ -207,13 +221,11 @@ export class ACPChatTransport implements ChatTransport<UIMessage> {
                     readyToRetry: shouldAutoRetryOnce,
                   })
 
-                  if (!credentials.hasAny) {
-                    appStore.set(codexLoginModalOpenAtom, true)
-                  } else if (!shouldAutoRetryOnce) {
-                    toast.error("Codex authentication failed", {
+                  if (!credentials.hasAny || !shouldAutoRetryOnce) {
+                    toast.error("OpenAI-compatible authentication failed", {
                       description: credentials.hasApiKey
-                        ? "Saved Codex API key was rejected. Update it in Settings."
-                        : "Saved Codex subscription auth failed. Reconnect subscription in Settings.",
+                        ? "Saved provider API key was rejected. Update it in Settings > Providers."
+                        : "No active provider key is configured. Add one in Settings > Providers.",
                     })
                   }
                 })()
@@ -230,9 +242,27 @@ export class ACPChatTransport implements ChatTransport<UIMessage> {
               }
 
               if (chunk.type === "error") {
-                toast.error("Codex error", {
-                  description: chunk.errorText || "An unexpected Codex error occurred.",
-                })
+                const category = chunk.debugInfo?.category || "UNKNOWN"
+                const description =
+                  chunk.errorText || "An unexpected OpenAI-compatible error occurred."
+
+                toast.error(
+                  category === "INVALID_LOCAL_WORKSPACE"
+                    ? "Workspace moved"
+                    : "OpenAI-compatible error",
+                  {
+                    description,
+                    action:
+                      category === "INVALID_LOCAL_WORKSPACE"
+                        ? {
+                            label: "Relink Folder",
+                            onClick: () => {
+                              void this.relinkWorkspace()
+                            },
+                          }
+                        : undefined,
+                  },
+                )
               }
 
               try {
@@ -251,7 +281,7 @@ export class ACPChatTransport implements ChatTransport<UIMessage> {
               }
             },
             onError: (error: Error) => {
-              toast.error("Codex request failed", {
+              toast.error("OpenAI-compatible request failed", {
                 description: error.message,
               })
               controller.error(error)

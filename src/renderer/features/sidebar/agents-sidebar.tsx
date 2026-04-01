@@ -28,6 +28,7 @@ import {
   showWorkspaceIconAtom,
   betaKanbanEnabledAtom,
   betaAutomationsEnabledAtom,
+  defaultAgentModeAtom,
 } from "../../lib/atoms"
 import {
   useRemoteChats,
@@ -119,6 +120,7 @@ import {
   pendingUserQuestionsAtom,
   desktopViewAtom,
   type UndoItem,
+  subChatModeAtomFamily,
 } from "../agents/atoms"
 import { NetworkStatus } from "../../components/ui/network-status"
 import { useAgentSubChatStore, OPEN_SUB_CHATS_CHANGE_EVENT } from "../agents/stores/sub-chat-store"
@@ -137,6 +139,8 @@ import { Checkbox } from "../../components/ui/checkbox"
 import { useHaptic } from "./hooks/use-haptic"
 import { TypewriterText } from "../../components/ui/typewriter-text"
 import { exportChat, copyChat, type ExportFormat } from "../agents/lib/export-chat"
+import { trpcClient } from "../../lib/trpc"
+import { appStore } from "../../lib/jotai-store"
 import {
   buildContextPreview,
   buildRenameSuggestion,
@@ -178,6 +182,128 @@ const GitHubAvatar = React.memo(function GitHubAvatar({
         onLoad={handleLoad}
         onError={handleError}
       />
+    </div>
+  )
+})
+
+const ThreadContextSection = React.memo(function ThreadContextSection({
+  chatId,
+  activeSubChatId,
+  openSubChatIds,
+  allSubChats,
+  onCreateThread,
+  onSelectThread,
+  isCreating,
+}: {
+  chatId: string
+  activeSubChatId: string | null
+  openSubChatIds: string[]
+  allSubChats: Array<{
+    id: string
+    name: string
+    updated_at?: string
+    mode?: "plan" | "agent"
+  }>
+  onCreateThread: () => void
+  onSelectThread: (subChatId: string) => void
+  isCreating: boolean
+}) {
+  const subChatsById = useMemo(
+    () => new Map(allSubChats.map((subChat) => [subChat.id, subChat])),
+    [allSubChats],
+  )
+
+  const orderedThreads = useMemo(() => {
+    const openThreads = openSubChatIds
+      .map((id) => subChatsById.get(id))
+      .filter((thread): thread is NonNullable<typeof thread> => Boolean(thread))
+
+    const closedThreads = allSubChats
+      .filter((thread) => !openSubChatIds.includes(thread.id))
+      .sort((a, b) => {
+        const aTime = a.updated_at ? new Date(a.updated_at).getTime() : 0
+        const bTime = b.updated_at ? new Date(b.updated_at).getTime() : 0
+        return bTime - aTime
+      })
+
+    const ordered = [...openThreads, ...closedThreads]
+    if (!activeSubChatId) return ordered.slice(0, 8)
+
+    const activeIndex = ordered.findIndex((thread) => thread.id === activeSubChatId)
+    if (activeIndex <= 0) return ordered.slice(0, 8)
+
+    const activeThread = ordered[activeIndex]
+    if (!activeThread) return ordered.slice(0, 8)
+
+    return [activeThread, ...ordered.filter((thread) => thread.id !== activeSubChatId)].slice(
+      0,
+      8,
+    )
+  }, [activeSubChatId, allSubChats, openSubChatIds, subChatsById])
+
+  if (orderedThreads.length === 0) return null
+
+  return (
+    <div className="px-2 pb-3 flex-shrink-0">
+      <div className="rounded-xl border border-border/60 bg-muted/25">
+        <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-border/50">
+          <div className="min-w-0">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+              Threads
+            </div>
+            <div className="text-xs text-muted-foreground truncate">
+              Current workspace context
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onCreateThread}
+            disabled={isCreating}
+            className="h-7 rounded-md px-2 text-xs"
+          >
+            {isCreating ? "Creating..." : "New thread"}
+          </Button>
+        </div>
+
+        <div className="p-2 space-y-1">
+          {orderedThreads.map((thread) => {
+            const isActive = thread.id === activeSubChatId
+            const isOpen = openSubChatIds.includes(thread.id)
+
+            return (
+              <button
+                key={`${chatId}-${thread.id}`}
+                type="button"
+                onClick={() => onSelectThread(thread.id)}
+                className={cn(
+                  "w-full rounded-lg px-2.5 py-2 text-left transition-colors",
+                  isActive
+                    ? "bg-secondary text-foreground"
+                    : "hover:bg-muted/70 text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <div className="flex items-center gap-2">
+                  <div
+                    className={cn(
+                      "h-2 w-2 rounded-full flex-shrink-0",
+                      thread.mode === "plan" ? "bg-amber-500/90" : "bg-primary/80",
+                    )}
+                  />
+                  <span className="flex-1 truncate text-sm font-medium">
+                    {thread.name || "New thread"}
+                  </span>
+                  {isOpen && (
+                    <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Open
+                    </span>
+                  )}
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      </div>
     </div>
   )
 })
@@ -1709,6 +1835,9 @@ export function AgentsSidebar({
   // Read unseen changes from global atoms
   const unseenChanges = useAtomValue(agentsUnseenChangesAtom)
   const justCreatedIds = useAtomValue(justCreatedIdsAtom)
+  const setJustCreatedIds = useSetAtom(justCreatedIdsAtom)
+  const defaultAgentMode = useAtomValue(defaultAgentModeAtom)
+  const [isCreatingThread, setIsCreatingThread] = useState(false)
 
   // Haptic feedback
   const { trigger: triggerHaptic } = useHaptic()
@@ -1958,6 +2087,17 @@ export function AgentsSidebar({
 
   // Unified undo stack for workspaces and sub-chats (Jotai atom)
   const [undoStack, setUndoStack] = useAtom(undoStackAtom)
+  const {
+    chatId: subChatStoreChatId,
+    activeSubChatId,
+    openSubChatIds,
+    allSubChats,
+  } = useAgentSubChatStore((state) => ({
+    chatId: state.chatId,
+    activeSubChatId: state.activeSubChatId,
+    openSubChatIds: state.openSubChatIds,
+    allSubChats: state.allSubChats,
+  }))
 
   // Restore chat mutation (for undo)
   const restoreChatMutation = trpc.chats.restore.useMutation({
@@ -2045,8 +2185,10 @@ export function AgentsSidebar({
   })
 
   // Cmd+Z to undo archive (supports multiple undos for workspaces AND sub-chats)
+  const undoHotkeyHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {})
+
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
+    undoHotkeyHandlerRef.current = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "z" && undoStack.length > 0) {
         e.preventDefault()
         // Get the most recent item
@@ -2084,10 +2226,21 @@ export function AgentsSidebar({
         }
       }
     }
+  }, [
+    undoStack,
+    setUndoStack,
+    restoreChatMutation,
+    restoreRemoteChatMutation,
+    setSelectedChatId,
+    setSelectedChatIsRemote,
+    setChatSourceMode,
+  ])
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => undoHotkeyHandlerRef.current(e)
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [undoStack, setUndoStack, restoreChatMutation, restoreRemoteChatMutation, setSelectedChatId])
+  }, [])
 
   // Batch archive mutation
   const archiveChatsBatchMutation = trpc.chats.archiveBatch.useMutation({
@@ -2114,6 +2267,53 @@ export function AgentsSidebar({
       setUndoStack((prev) => [...prev, ...newItems])
     },
   })
+
+  const handleCreateThread = useCallback(async () => {
+    if (!selectedChatId || selectedChatIsRemote) return
+
+    const store = useAgentSubChatStore.getState()
+    setIsCreatingThread(true)
+
+    try {
+      const newSubChat = await trpcClient.chats.createSubChat.mutate({
+        chatId: selectedChatId,
+        name: "New Chat",
+        mode: defaultAgentMode,
+      })
+
+      setJustCreatedIds((prev) => new Set([...prev, newSubChat.id]))
+      appStore.set(subChatModeAtomFamily(newSubChat.id), defaultAgentMode)
+      store.addToAllSubChats({
+        id: newSubChat.id,
+        name: newSubChat.name || "New Chat",
+        created_at: new Date().toISOString(),
+        mode: defaultAgentMode,
+      })
+      store.addToOpenSubChats(newSubChat.id)
+      store.setActiveSubChat(newSubChat.id)
+      setShowNewChatForm(false)
+    } catch (error) {
+      console.error("[AgentsSidebar] Failed to create thread", error)
+      toast.error("Failed to create thread")
+    } finally {
+      setIsCreatingThread(false)
+    }
+  }, [
+    defaultAgentMode,
+    selectedChatId,
+    selectedChatIsRemote,
+    setJustCreatedIds,
+    setShowNewChatForm,
+  ])
+
+  const handleSelectThread = useCallback((subChatId: string) => {
+    const store = useAgentSubChatStore.getState()
+    if (!store.openSubChatIds.includes(subChatId)) {
+      store.addToOpenSubChats(subChatId)
+    }
+    store.setActiveSubChat(subChatId)
+    setShowNewChatForm(false)
+  }, [setShowNewChatForm])
 
   // Reset selected chat when project changes (but not on initial load)
   const prevProjectIdRef = useRef<string | null | undefined>(undefined)
@@ -3384,6 +3584,21 @@ export function AgentsSidebar({
                 justCreatedIds={justCreatedIds}
               />
             </div>
+          ) : null}
+
+          {selectedChatId &&
+          !selectedChatIsRemote &&
+          subChatStoreChatId === selectedChatId &&
+          allSubChats.length > 0 ? (
+            <ThreadContextSection
+              chatId={selectedChatId}
+              activeSubChatId={activeSubChatId}
+              openSubChatIds={openSubChatIds}
+              allSubChats={allSubChats}
+              onCreateThread={handleCreateThread}
+              onSelectThread={handleSelectThread}
+              isCreating={isCreatingThread}
+            />
           ) : null}
         </div>
 

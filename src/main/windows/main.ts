@@ -17,12 +17,19 @@ import { createAppRouter } from "../lib/trpc/routers"
 import { getAuthManager, handleAuthCode, getBaseUrl } from "../index"
 import { registerGitWatcherIPC } from "../lib/git/watcher"
 import { hasActiveClaudeSessions, abortAllClaudeSessions } from "../lib/trpc/routers/claude"
-import { hasActiveCodexStreams, abortAllCodexStreams } from "../lib/trpc/routers/codex"
+import {
+  hasActiveOpenAICompatibleStreams,
+  abortAllOpenAICompatibleStreams,
+} from "../lib/trpc/routers/openai-compatible"
 import { registerThemeScannerIPC } from "../lib/vscode-theme-scanner"
 import { windowManager } from "./window-manager"
 
 // Flag to bypass close confirmation when app.quit() has already been confirmed
 let isQuitting = false
+
+// GLMX runs primarily as a local desktop app, so we don't block startup on
+// the legacy 21st web auth flow.
+const BYPASS_APP_AUTH = true
 
 export function setIsQuitting(value: boolean): void {
   isQuitting = value
@@ -710,7 +717,7 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
       if (!input.shift) {
         // Block Cmd+R entirely
         event.preventDefault()
-      } else if (hasActiveClaudeSessions() || hasActiveCodexStreams()) {
+      } else if (hasActiveClaudeSessions() || hasActiveOpenAICompatibleStreams()) {
         // Cmd+Shift+R with active streams — intercept and confirm
         event.preventDefault()
         dialog
@@ -727,7 +734,7 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
           .then(({ response }) => {
             if (response === 1) {
               abortAllClaudeSessions()
-              abortAllCodexStreams()
+              abortAllOpenAICompatibleStreams()
               window.webContents.reloadIgnoringCache()
             }
           })
@@ -747,11 +754,11 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
     if (isQuitting) {
       // Still abort sessions gracefully so partial state is saved
       abortAllClaudeSessions()
-      abortAllCodexStreams()
+      abortAllOpenAICompatibleStreams()
       return
     }
 
-    if (hasActiveClaudeSessions() || hasActiveCodexStreams()) {
+    if (hasActiveClaudeSessions() || hasActiveOpenAICompatibleStreams()) {
       event.preventDefault()
       dialog
         .showMessageBox(window, {
@@ -767,7 +774,7 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
         .then(({ response }) => {
           if (response === 1) {
             abortAllClaudeSessions()
-            abortAllCodexStreams()
+            abortAllOpenAICompatibleStreams()
             window.destroy()
           }
         })
@@ -792,7 +799,10 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
   console.log("[Main] getUser():", user ? user.email : "null")
   console.log("[Main] ================================")
 
-  if (isAuth) {
+  if (isAuth || BYPASS_APP_AUTH) {
+    if (!isAuth && BYPASS_APP_AUTH) {
+      console.log("[Main] ~ Auth bypass enabled, loading app without web sign-in")
+    }
     console.log("[Main] ✓ User authenticated, loading app")
     // Get stable window ID from manager (assigned during register)
     // "main" for first window, "window-2", "window-3", etc. for additional windows
