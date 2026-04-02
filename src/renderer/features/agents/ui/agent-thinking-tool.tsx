@@ -6,8 +6,11 @@ import {
   CheckCircle2,
   ChevronRight,
   Compass,
+  Gauge,
   FileText,
+  PlayCircle,
   Search,
+  Sparkles,
   Wrench,
 } from "lucide-react"
 import { cn } from "../../../lib/utils"
@@ -43,15 +46,18 @@ type ThinkingEventType =
   | "found"
   | "read"
   | "explored"
+  | "command"
   | "implementation"
   | "result"
 
 interface ThinkingEvent {
   type: ThinkingEventType
   text: string
+  count?: number
 }
 
 type ThinkingViewMode = "compact" | "detailed"
+type ThinkingPhase = "plan" | "explore" | "implement" | "verify"
 
 function formatElapsedTime(ms: number): string {
   if (ms < 1000) return ""
@@ -65,6 +71,7 @@ function formatElapsedTime(ms: number): string {
 
 function detectEventType(line: string): ThinkingEventType {
   if (/^thought\b/i.test(line)) return "thought"
+  if (/^(running command|ran command)\b/i.test(line)) return "command"
   if (
     /^(found|searched|searching|no matches|matched)\b/i.test(line)
   ) {
@@ -88,12 +95,50 @@ function stripPrefix(line: string, type: ThinkingEventType): string {
       return line.replace(/^read\b[:\s-]*/i, "").trim()
     case "explored":
       return line.replace(/^explored\b[:\s-]*/i, "").trim()
+    case "command":
+      return line.replace(/^(running command|ran command)\b[:\s-]*/i, "").trim()
     case "result":
       return line.replace(/^(implemented|done|completed|compacted)\b[:\s-]*/i, "").trim()
     case "implementation":
     default:
       return line.trim()
   }
+}
+
+function normalizeEventText(type: ThinkingEventType, text: string): string {
+  const line = text.trim()
+  if (!line) return ""
+
+  if (type === "explored") {
+    const summaryMatch = line.match(/^(\d+)\s+files?,\s*(\d+)\s+search(?:es)?(?:,\s*(\d+)\s+lists?)?/i)
+    if (summaryMatch) {
+      const fileCount = summaryMatch[1]
+      const searchCount = summaryMatch[2]
+      const listCount = summaryMatch[3]
+      return listCount
+        ? `Scanned workspace: ${fileCount} files, ${searchCount} searches, ${listCount} lists`
+        : `Scanned workspace: ${fileCount} files, ${searchCount} searches`
+    }
+  }
+
+  if (type === "found") {
+    if (/^searched files$/i.test(line)) return "Searched codebase"
+    if (/^listed files$/i.test(line)) return "Listed workspace files"
+    if (/^no matches\b/i.test(line)) return line
+  }
+
+  if (type === "implementation") {
+    if (/^edited$/i.test(line)) return "Updated files"
+  }
+
+  return line
+}
+
+function getPhaseForEvent(type: ThinkingEventType): ThinkingPhase {
+  if (type === "thought") return "plan"
+  if (type === "found" || type === "read" || type === "explored") return "explore"
+  if (type === "command" || type === "implementation") return "implement"
+  return "verify"
 }
 
 function parseThinkingEvents(text: string): ThinkingEvent[] {
@@ -111,12 +156,15 @@ function parseThinkingEvents(text: string): ThinkingEvent[] {
     }
 
     const type = detectEventType(rawLine)
-    const normalized = stripPrefix(rawLine, type) || rawLine
+    const normalized = normalizeEventText(type, stripPrefix(rawLine, type) || rawLine)
+    if (!normalized) continue
     const previous = events[events.length - 1]
 
     // Compact consecutive entries of same type into a single event.
     if (previous && previous.type === type) {
-      if (!previous.text.toLowerCase().includes(normalized.toLowerCase())) {
+      if (previous.text.toLowerCase() === normalized.toLowerCase()) {
+        previous.count = (previous.count ?? 1) + 1
+      } else if (!previous.text.toLowerCase().includes(normalized.toLowerCase())) {
         previous.text = `${previous.text} • ${normalized}`
       }
       continue
@@ -161,6 +209,12 @@ const EVENT_META: Record<
     chipClass: "bg-amber-500/10 text-amber-300 border-amber-500/20",
     textClass: "text-foreground/90",
   },
+  command: {
+    label: "Command",
+    icon: PlayCircle,
+    chipClass: "bg-sky-500/10 text-sky-300 border-sky-500/20",
+    textClass: "text-foreground/95",
+  },
   implementation: {
     label: "Implementation",
     icon: Wrench,
@@ -172,6 +226,32 @@ const EVENT_META: Record<
     icon: CheckCircle2,
     chipClass: "bg-green-500/10 text-green-300 border-green-500/20",
     textClass: "text-foreground",
+  },
+}
+
+const PHASE_META: Record<
+  ThinkingPhase,
+  { label: string; icon: typeof Sparkles; className: string }
+> = {
+  plan: {
+    label: "Plan",
+    icon: Sparkles,
+    className: "text-blue-300 bg-blue-500/10 border-blue-500/20",
+  },
+  explore: {
+    label: "Explore",
+    icon: Compass,
+    className: "text-violet-300 bg-violet-500/10 border-violet-500/20",
+  },
+  implement: {
+    label: "Implement",
+    icon: Wrench,
+    className: "text-emerald-300 bg-emerald-500/10 border-emerald-500/20",
+  },
+  verify: {
+    label: "Verify",
+    icon: Gauge,
+    className: "text-green-300 bg-green-500/10 border-green-500/20",
   },
 }
 
@@ -229,12 +309,20 @@ export const AgentThinkingTool = memo(function AgentThinkingTool({
     const stored = window.localStorage.getItem(THINKING_VIEW_MODE_STORAGE_KEY)
     return stored === "compact" || stored === "detailed" ? stored : "detailed"
   })
-  const orderedEvents = useMemo(() => {
-    if (events.length <= 1) return events
-    const nonResult = events.filter((event) => event.type !== "result")
-    const result = events.filter((event) => event.type === "result")
-    return [...nonResult, ...result]
+  const phaseGroups = useMemo(() => {
+    const groups: Array<{ phase: ThinkingPhase; events: ThinkingEvent[] }> = []
+    for (const event of events) {
+      const phase = getPhaseForEvent(event.type)
+      const last = groups[groups.length - 1]
+      if (last && last.phase === phase) {
+        last.events.push(event)
+      } else {
+        groups.push({ phase, events: [event] })
+      }
+    }
+    return groups
   }, [events])
+  const currentPhase = phaseGroups.length > 0 ? phaseGroups[phaseGroups.length - 1]?.phase : undefined
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -307,7 +395,7 @@ export const AgentThinkingTool = memo(function AgentThinkingTool({
             />
           </div>
         </div>
-        {isExpanded && orderedEvents.length > 0 && (
+        {isExpanded && phaseGroups.length > 0 && (
           <div
             className="flex items-center gap-1 rounded-md border border-border/60 bg-muted/30 p-0.5 ml-2"
             onClick={(event) => event.stopPropagation()}
@@ -362,41 +450,74 @@ export const AgentThinkingTool = memo(function AgentThinkingTool({
                 : undefined
             }
           >
-            {orderedEvents.length > 0 ? (
+            {isStreaming && currentPhase && (
+              <div className="mb-2 rounded-md border border-primary/20 bg-primary/5 px-2 py-1 text-xs text-foreground/90">
+                <span className="font-medium">Currently:</span>{" "}
+                {PHASE_META[currentPhase].label}
+              </div>
+            )}
+            {phaseGroups.length > 0 ? (
               <div className={cn(viewMode === "compact" ? "space-y-1" : "space-y-1.5")}>
-                {orderedEvents.map((event, index) => {
-                  const meta = EVENT_META[event.type]
-                  const Icon = meta.icon
+                {phaseGroups.map((group, groupIndex) => {
+                  const phaseMeta = PHASE_META[group.phase]
+                  const PhaseIcon = phaseMeta.icon
                   return (
                     <div
-                      key={`${event.type}-${index}`}
-                      className={cn(
-                        "rounded-md border border-border/50 bg-muted/20 px-2",
-                        viewMode === "compact" ? "py-1" : "py-1.5",
-                        event.type === "result" && "border-green-500/35 bg-green-500/5",
-                      )}
+                      key={`${group.phase}-${groupIndex}`}
+                      className="rounded-md border border-border/50 bg-muted/20 px-2 py-1.5"
                     >
-                      <div className={cn("flex items-center gap-1.5", viewMode === "detailed" && "mb-1")}>
+                      <div className="mb-1.5 flex items-center gap-1.5">
                         <span
                           className={cn(
                             "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium",
-                            meta.chipClass,
+                            phaseMeta.className,
                           )}
                         >
-                          <Icon className="h-3 w-3" />
-                          {meta.label}
+                          <PhaseIcon className="h-3 w-3" />
+                          {phaseMeta.label}
                         </span>
-                        {viewMode === "compact" && (
-                          <p className={cn("text-xs leading-relaxed break-words truncate", meta.textClass)}>
-                            {event.text}
-                          </p>
-                        )}
                       </div>
-                      {viewMode === "detailed" && (
-                        <p className={cn("text-xs leading-relaxed break-words", meta.textClass)}>
-                          {event.text}
-                        </p>
-                      )}
+                      <div className={cn(viewMode === "compact" ? "space-y-1" : "space-y-1.5")}>
+                        {group.events.map((event, eventIndex) => {
+                          const meta = EVENT_META[event.type]
+                          const Icon = meta.icon
+                          return (
+                            <div
+                              key={`${group.phase}-${groupIndex}-${event.type}-${eventIndex}`}
+                              className={cn(
+                                "rounded-md border border-border/50 bg-background/30 px-2",
+                                viewMode === "compact" ? "py-1" : "py-1.5",
+                                event.type === "result" && "border-green-500/35 bg-green-500/5",
+                              )}
+                            >
+                              <div className={cn("flex items-center gap-1.5", viewMode === "detailed" && "mb-1")}>
+                                <span
+                                  className={cn(
+                                    "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium",
+                                    meta.chipClass,
+                                  )}
+                                >
+                                  <Icon className="h-3 w-3" />
+                                  {meta.label}
+                                </span>
+                                {event.count && event.count > 1 && (
+                                  <span className="text-[10px] text-muted-foreground/70">x{event.count}</span>
+                                )}
+                                {viewMode === "compact" && (
+                                  <p className={cn("text-xs leading-relaxed break-words truncate", meta.textClass)}>
+                                    {event.text}
+                                  </p>
+                                )}
+                              </div>
+                              {viewMode === "detailed" && (
+                                <p className={cn("text-xs leading-relaxed break-words", meta.textClass)}>
+                                  {event.text}
+                                </p>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
                     </div>
                   )
                 })}
