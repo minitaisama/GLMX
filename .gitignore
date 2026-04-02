@@ -32,3 +32,6 @@ index-*.js
 
 # Claude binary (downloaded at build time)
 resources/bin/
+# Playwright artifacts
+playwright-report/
+test-results/
