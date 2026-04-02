@@ -177,6 +177,46 @@ function buildCodexFallbackSummary(parts: unknown): string {
   return summaryLines.join(" ")
 }
 
+function collapseRunawayRepeatedLines(text: string): string {
+  if (!text || !text.includes("\n")) return text
+
+  const lines = text.split("\n")
+  const output: string[] = []
+  let i = 0
+
+  while (i < lines.length) {
+    const current = lines[i]
+    const normalized = current.trim().toLowerCase()
+
+    // Keep empty lines as-is to preserve markdown spacing.
+    if (!normalized) {
+      output.push(current)
+      i += 1
+      continue
+    }
+
+    let j = i + 1
+    while (j < lines.length && lines[j].trim().toLowerCase() === normalized) {
+      j += 1
+    }
+
+    const repeatCount = j - i
+    if (repeatCount >= 6) {
+      // Keep first 2 occurrences to preserve intent, then summarize collapse.
+      output.push(current, current)
+      output.push(`_...collapsed ${repeatCount - 2} repeated lines..._`)
+    } else {
+      for (let k = i; k < j; k += 1) {
+        output.push(lines[k])
+      }
+    }
+
+    i = j
+  }
+
+  return output.join("\n")
+}
+
 /** Check if there are any active Codex streaming sessions */
 export function hasActiveCodexStreams(): boolean {
   return activeStreams.size > 0
@@ -2011,17 +2051,35 @@ export const codexRouter = router({
                 return normalizedMessage
               }
 
-              if (hasAssistantTextPart((normalizedMessage as any).parts)) {
-                return normalizedMessage
+              const sanitizedParts = (normalizedMessage as any).parts.map((part: any) => {
+                if (part?.type === "text" && typeof part?.text === "string") {
+                  const collapsedText = collapseRunawayRepeatedLines(part.text)
+                  if (collapsedText !== part.text) {
+                    return {
+                      ...part,
+                      text: collapsedText,
+                    }
+                  }
+                }
+                return part
+              })
+
+              const sanitizedMessage = {
+                ...(normalizedMessage as any),
+                parts: sanitizedParts,
+              }
+
+              if (hasAssistantTextPart((sanitizedMessage as any).parts)) {
+                return sanitizedMessage
               }
 
               return {
-                ...(normalizedMessage as any),
+                ...(sanitizedMessage as any),
                 parts: [
-                  ...(normalizedMessage as any).parts,
+                  ...(sanitizedMessage as any).parts,
                   {
                     type: "text",
-                    text: buildCodexFallbackSummary((normalizedMessage as any).parts),
+                    text: buildCodexFallbackSummary((sanitizedMessage as any).parts),
                   },
                 ],
               }
