@@ -41,7 +41,7 @@ import {
 } from "../../lib/hooks/use-remote-chats"
 import { usePrefetchLocalChat } from "../../lib/hooks/use-prefetch-local-chat"
 import { ArchivePopover } from "../agents/ui/archive-popover"
-import { ChevronDown, MoreHorizontal, Columns3, ArrowUpRight } from "lucide-react"
+import { ChevronDown, ChevronRight, MoreHorizontal, Columns3, ArrowUpRight } from "lucide-react"
 import { useQuery } from "@tanstack/react-query"
 import { remoteTrpc } from "../../lib/remote-trpc"
 // import { useRouter } from "next/navigation" // Desktop doesn't use next/navigation
@@ -190,6 +190,7 @@ const GitHubAvatar = React.memo(function GitHubAvatar({
 
 const ThreadContextSection = React.memo(function ThreadContextSection({
   chatId,
+  workspaceName,
   activeSubChatId,
   openSubChatIds,
   pinnedSubChatIds,
@@ -202,6 +203,7 @@ const ThreadContextSection = React.memo(function ThreadContextSection({
   isCreating,
 }: {
   chatId: string
+  workspaceName?: string | null
   activeSubChatId: string | null
   openSubChatIds: string[]
   pinnedSubChatIds: string[]
@@ -219,6 +221,7 @@ const ThreadContextSection = React.memo(function ThreadContextSection({
   isCreating: boolean
 }) {
   const threadRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
+  const [isExpanded, setIsExpanded] = useState(true)
 
   const subChatsById = useMemo(
     () => new Map(allSubChats.map((subChat) => [subChat.id, subChat])),
@@ -278,16 +281,29 @@ const ThreadContextSection = React.memo(function ThreadContextSection({
 
   return (
     <div className="px-2 pb-3 flex-shrink-0">
-      <div className="rounded-xl border border-border/60 bg-muted/25">
-        <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-border/50">
-          <div className="min-w-0">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-              Threads
+      <div className="rounded-xl border border-border/70 bg-muted/35">
+        <div className="flex items-center justify-between gap-2 px-2.5 py-2 border-b border-border/60">
+          <button
+            type="button"
+            onClick={() => setIsExpanded((prev) => !prev)}
+            className="min-w-0 flex items-center gap-1.5 rounded-md px-1 py-0.5 hover:bg-muted/70 transition-colors"
+            aria-expanded={isExpanded}
+            aria-label={isExpanded ? "Collapse workspace threads" : "Expand workspace threads"}
+          >
+            {isExpanded ? (
+              <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+            )}
+            <div className="min-w-0 text-left">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                Workspace
+              </div>
+              <div className="text-sm font-medium text-foreground truncate">
+                {workspaceName || "Current workspace"}
+              </div>
             </div>
-            <div className="text-xs text-muted-foreground truncate">
-              Current workspace context
-            </div>
-          </div>
+          </button>
           <Button
             variant="ghost"
             size="sm"
@@ -299,8 +315,12 @@ const ThreadContextSection = React.memo(function ThreadContextSection({
           </Button>
         </div>
 
-        <div className="p-2 space-y-1">
-          {orderedThreads.map((thread) => {
+        {isExpanded && (
+          <div className="p-2 space-y-1">
+            <div className="px-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/90">
+              Threads
+            </div>
+            {orderedThreads.map((thread) => {
             const isActive = thread.id === activeSubChatId
             const isOpen = openSubChatIds.includes(thread.id)
             const isPinned = pinnedSubChatIds.includes(thread.id)
@@ -321,8 +341,9 @@ const ThreadContextSection = React.memo(function ThreadContextSection({
                     onClick={() => onSelectThread(thread.id)}
                     className={cn(
                       "w-full rounded-lg px-2.5 py-2 text-left transition-colors",
+                      "ml-4 border border-transparent",
                       isActive
-                        ? "bg-secondary text-foreground"
+                        ? "bg-secondary text-foreground border-border/60"
                         : "hover:bg-muted/70 text-muted-foreground hover:text-foreground",
                     )}
                   >
@@ -370,8 +391,9 @@ const ThreadContextSection = React.memo(function ThreadContextSection({
                 />
               </ContextMenu>
             )
-          })}
-        </div>
+            })}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -1535,11 +1557,10 @@ const SidebarHeader = memo(function SidebarHeader({
         <div
           ref={closeButtonRef}
           className={cn(
-            "absolute right-2 z-20 transition-opacity duration-150",
+            "absolute right-2 z-20 transition-opacity duration-150 opacity-100",
             "top-2",
           )}
           style={{
-            opacity: isDropdownOpen ? 1 : 0,
             // @ts-expect-error - WebKit-specific property
             WebkitAppRegion: "no-drag",
           }}
@@ -2655,6 +2676,15 @@ export function AgentsSidebar({
     }
   }, [searchQuery, agentChats, pinnedChatIds, projects])
 
+  const selectedWorkspaceName = useMemo(() => {
+    if (!selectedChatId) return null
+    const selected = filteredChats.find((chat) => {
+      const chatOriginalId = chat.isRemote ? chat.id.replace(/^remote_/, "") : chat.id
+      return chatOriginalId === selectedChatId
+    })
+    return selected?.name ?? null
+  }, [filteredChats, selectedChatId])
+
   // Handle bulk archive of selected chats
   const handleBulkArchive = useCallback(() => {
     const chatIdsToArchive = Array.from(selectedChatIds)
@@ -3724,6 +3754,7 @@ export function AgentsSidebar({
           allSubChats.length > 0 ? (
             <ThreadContextSection
               chatId={selectedChatId}
+              workspaceName={selectedWorkspaceName}
               activeSubChatId={activeSubChatId}
               openSubChatIds={openSubChatIds}
               pinnedSubChatIds={pinnedSubChatIds}
