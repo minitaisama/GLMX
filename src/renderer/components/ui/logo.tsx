@@ -1,7 +1,8 @@
 import * as React from "react"
 import { cn } from "../../lib/utils"
 
-const BRAND_LOGO_SRC = "./brand-logo.png"
+const BRAND_LOGO_SRC = "./brand-logo.svg"
+const BRAND_LOGO_FALLBACK_SRC = "./brand-logo.png"
 
 interface LogoProps extends React.HTMLAttributes<HTMLSpanElement> {
   className?: string
@@ -20,6 +21,11 @@ export function Logo({ className, fill: _fill, ...props }: LogoProps) {
         alt=""
         className="h-full w-full object-contain"
         draggable={false}
+        onError={(event) => {
+          const target = event.currentTarget
+          if (target.src.endsWith("brand-logo.png")) return
+          target.src = BRAND_LOGO_FALLBACK_SRC
+        }}
       />
     </span>
   )

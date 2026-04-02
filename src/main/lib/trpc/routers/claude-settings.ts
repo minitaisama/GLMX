@@ -5,6 +5,9 @@ import { z } from "zod"
 import { router, publicProcedure } from "../index"
 
 const CLAUDE_SETTINGS_PATH = path.join(os.homedir(), ".claude", "settings.json")
+const GLMX_COAUTHOR_ENABLED_KEY = "glmxIncludeCoAuthoredBy"
+const GLMX_COAUTHOR_NAME = "GLMX"
+const GLMX_COAUTHOR_EMAIL = "agent@glmx.ai"
 
 // Cache for enabled plugins to avoid repeated filesystem reads
 let enabledPluginsCache: { plugins: string[]; timestamp: number } | null = null
@@ -110,8 +113,10 @@ export const claudeSettingsRouter = router({
    */
   getIncludeCoAuthoredBy: publicProcedure.query(async () => {
     const settings = await readClaudeSettings()
-    // Default is true (include co-authored-by)
-    // Only return false if explicitly set to false
+    const glmxEnabled = settings[GLMX_COAUTHOR_ENABLED_KEY]
+    if (typeof glmxEnabled === "boolean") {
+      return glmxEnabled
+    }
     return settings.includeCoAuthoredBy !== false
   }),
 
@@ -123,17 +128,33 @@ export const claudeSettingsRouter = router({
     .mutation(async ({ input }) => {
       const settings = await readClaudeSettings()
 
-      if (input.enabled) {
-        // Remove the setting to use default (true)
-        delete settings.includeCoAuthoredBy
-      } else {
-        // Explicitly set to false to disable
-        settings.includeCoAuthoredBy = false
-      }
+      settings[GLMX_COAUTHOR_ENABLED_KEY] = input.enabled
+      // Always disable Claude's default co-author trailer. GLMX owns this behavior.
+      settings.includeCoAuthoredBy = false
+      settings.glmxCoAuthor = input.enabled
+        ? {
+            name: GLMX_COAUTHOR_NAME,
+            email: GLMX_COAUTHOR_EMAIL,
+          }
+        : undefined
 
       await writeClaudeSettings(settings)
       return { success: true }
     }),
+
+  getCoAuthorIdentity: publicProcedure.query(async () => {
+    const settings = await readClaudeSettings()
+    const enabledFromGlmx = settings[GLMX_COAUTHOR_ENABLED_KEY]
+    const enabled =
+      typeof enabledFromGlmx === "boolean"
+        ? enabledFromGlmx
+        : settings.includeCoAuthoredBy !== false
+    return {
+      enabled,
+      name: GLMX_COAUTHOR_NAME,
+      email: GLMX_COAUTHOR_EMAIL,
+    }
+  }),
 
   /**
    * Get list of enabled plugins
