@@ -122,6 +122,7 @@ import {
 } from "../../ui/dropdown-menu"
 import { ChevronDown } from "lucide-react"
 import { Switch } from "../../ui/switch"
+import { Logo } from "../../ui/logo"
 import { trpc } from "../../../lib/trpc"
 
 // Hook to detect narrow screen
@@ -187,7 +188,7 @@ export function AgentsPreferencesTab() {
         <div className="flex flex-col space-y-1.5 text-center sm:text-left">
           <h3 className="text-sm font-semibold text-foreground">Preferences</h3>
           <p className="text-xs text-muted-foreground">
-            Configure Claude's behavior and features
+            Configure GLMX behavior and features
           </p>
         </div>
       )}
@@ -236,11 +237,12 @@ export function AgentsPreferencesTab() {
         </div>
         <div className="flex items-center justify-between p-4 border-t border-border">
           <div className="flex flex-col space-y-1">
-            <span className="text-sm font-medium text-foreground">
-              Include Co-Authored-By
+            <span className="text-sm font-medium text-foreground inline-flex items-center gap-2">
+              <Logo className="h-4 w-4 rounded-sm" />
+              Co-authored-by GLMX
             </span>
             <span className="text-xs text-muted-foreground">
-              Add "Co-authored-by: Claude" to git commits made by Claude
+              Add Co-authored-by: GLMX &lt;agent@glmx.ai&gt; to commits created from GLMX.
             </span>
           </div>
           <Switch

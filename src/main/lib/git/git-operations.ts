@@ -1,5 +1,8 @@
 import { shell } from "electron";
 import simpleGit from "simple-git";
+import * as fs from "fs/promises";
+import * as os from "os";
+import * as path from "path";
 import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
 import { logger } from "../logger";
@@ -18,6 +21,59 @@ import {
 } from "./git-factory";
 
 export { isUpstreamMissingError };
+
+const CLAUDE_SETTINGS_PATH = path.join(os.homedir(), ".claude", "settings.json");
+const DEFAULT_COAUTHOR_NAME = "GLMX";
+const DEFAULT_COAUTHOR_EMAIL = "agent@glmx.ai";
+
+type CoAuthorIdentity = {
+	enabled: boolean;
+	name: string;
+	email: string;
+};
+
+async function readCommitCoAuthorIdentity(): Promise<CoAuthorIdentity> {
+	try {
+		const raw = await fs.readFile(CLAUDE_SETTINGS_PATH, "utf-8");
+		const parsed = JSON.parse(raw) as Record<string, unknown>;
+		const enabledSetting = parsed.glmxIncludeCoAuthoredBy;
+		const enabled =
+			typeof enabledSetting === "boolean"
+				? enabledSetting
+				: parsed.includeCoAuthoredBy !== false;
+		const configured =
+			(parsed.glmxCoAuthor as { name?: unknown; email?: unknown } | undefined) ?? {};
+		const name =
+			typeof configured.name === "string" && configured.name.trim().length > 0
+				? configured.name.trim()
+				: DEFAULT_COAUTHOR_NAME;
+		const email =
+			typeof configured.email === "string" && configured.email.trim().length > 0
+				? configured.email.trim()
+				: DEFAULT_COAUTHOR_EMAIL;
+		return { enabled, name, email };
+	} catch {
+		return {
+			enabled: true,
+			name: DEFAULT_COAUTHOR_NAME,
+			email: DEFAULT_COAUTHOR_EMAIL,
+		};
+	}
+}
+
+function appendCoAuthorTrailer(
+	message: string,
+	coAuthor: CoAuthorIdentity,
+): string {
+	if (!coAuthor.enabled) {
+		return message;
+	}
+	const trailer = `Co-authored-by: ${coAuthor.name} <${coAuthor.email}>`;
+	if (message.toLowerCase().includes(trailer.toLowerCase())) {
+		return message;
+	}
+	return `${message.trimEnd()}\n\n${trailer}`;
+}
 
 async function hasUpstreamBranch(
 	git: ReturnType<typeof simpleGit>,
@@ -199,6 +255,8 @@ export const createGitOperationsRouter = () => {
 
 					return withGitLock(input.worktreePath, async () => {
 						const git = createGit(input.worktreePath);
+						const coAuthor = await readCommitCoAuthorIdentity();
+						const commitMessage = appendCoAuthorTrailer(input.message, coAuthor);
 
 						// Check that there are staged changes
 						const status = await git.status();
@@ -207,8 +265,8 @@ export const createGitOperationsRouter = () => {
 						}
 
 						const result = await runLoggedGitOperation("commit", input.worktreePath, () =>
-							withLockRetry(input.worktreePath, () => git.commit(input.message)),
-							{ message: input.message }
+							withLockRetry(input.worktreePath, () => git.commit(commitMessage)),
+							{ message: commitMessage }
 						);
 						invalidateGitStateCaches(input.worktreePath);
 						return { success: true, hash: result.commit };
@@ -241,6 +299,8 @@ export const createGitOperationsRouter = () => {
 
 					return withGitLock(input.worktreePath, async () => {
 						const git = createGit(input.worktreePath);
+						const coAuthor = await readCommitCoAuthorIdentity();
+						const commitMessage = appendCoAuthorTrailer(input.message, coAuthor);
 
 						// First, unstage everything to start fresh
 						await runLoggedGitOperation("reset --mixed HEAD", input.worktreePath, () =>
@@ -261,8 +321,8 @@ export const createGitOperationsRouter = () => {
 
 						// Commit
 						const result = await runLoggedGitOperation("atomicCommit", input.worktreePath, () =>
-							withLockRetry(input.worktreePath, () => git.commit(input.message)),
-							{ fileCount: input.filePaths.length, message: input.message }
+							withLockRetry(input.worktreePath, () => git.commit(commitMessage)),
+							{ fileCount: input.filePaths.length, message: commitMessage }
 						);
 
 						invalidateGitStateCaches(input.worktreePath);
