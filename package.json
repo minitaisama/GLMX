@@ -11,6 +11,7 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
+    "dev:standalone": "node scripts/dev-standalone.mjs",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "package": "electron-builder --dir",
