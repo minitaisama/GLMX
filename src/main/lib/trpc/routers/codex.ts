@@ -5,7 +5,7 @@ import { eq } from "drizzle-orm"
 import { app } from "electron"
 import { spawn, type ChildProcess } from "node:child_process"
 import { createHash } from "node:crypto"
-import { existsSync, mkdirSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync } from "node:fs"
 import { createServer, request as httpRequest, type Server } from "node:http"
 import { readdir, readFile } from "node:fs/promises"
 import { request as httpsRequest } from "node:https"
@@ -558,23 +558,54 @@ function toTimestampMs(value: unknown): number | undefined {
   return parsed
 }
 
-function resolveSessionsRoot(): string {
-  // Match provider env precedence: shell-derived env overrides process.env.
-  const shellCodexHome = getClaudeShellEnvironment().CODEX_HOME?.trim()
-  if (shellCodexHome) {
-    return join(shellCodexHome, "sessions")
+function resolveSessionsRoots(): string[] {
+  const roots: string[] = []
+
+  // 1) Prefer GLMX-isolated session state under app userData.
+  const providerStateRoot = join(app.getPath("userData"), "codex-provider-state")
+  if (existsSync(providerStateRoot)) {
+    try {
+      const subDirs = readdirSync(providerStateRoot, { withFileTypes: true })
+      for (const entry of subDirs) {
+        if (!entry.isDirectory()) continue
+        const sessionsDir = join(providerStateRoot, entry.name, "sessions")
+        if (existsSync(sessionsDir)) {
+          roots.push(sessionsDir)
+        }
+      }
+    } catch {
+      // Ignore unreadable directory and keep resolving fallbacks.
+    }
   }
 
+  // 2) Explicit GLMX override for standalone runs.
+  const shellEnv = getClaudeShellEnvironment()
+  const shellGlmxCodexHome = shellEnv.GLMX_CODEX_HOME?.trim()
+  if (shellGlmxCodexHome) {
+    roots.push(join(shellGlmxCodexHome, "sessions"))
+  }
+  const processGlmxCodexHome = process.env.GLMX_CODEX_HOME?.trim()
+  if (processGlmxCodexHome) {
+    roots.push(join(processGlmxCodexHome, "sessions"))
+  }
+
+  // 3) Compatibility fallbacks (legacy Codex locations).
+  const shellCodexHome = shellEnv.CODEX_HOME?.trim()
+  if (shellCodexHome) {
+    roots.push(join(shellCodexHome, "sessions"))
+  }
   const processCodexHome = process.env.CODEX_HOME?.trim()
   if (processCodexHome) {
-    return join(processCodexHome, "sessions")
+    roots.push(join(processCodexHome, "sessions"))
   }
+  roots.push(join(homedir(), ".codex", "sessions"))
 
-  return join(homedir(), ".codex", "sessions")
+  // De-duplicate while preserving precedence.
+  return [...new Set(roots)]
 }
 
 async function findSessionFileById(sessionId: string): Promise<string | null> {
-  const sessionsRoot = resolveSessionsRoot()
+  const sessionRoots = resolveSessionsRoots()
   const fileSuffix = `-${sessionId}.jsonl`
   const sortDesc = (values: string[]) =>
     values.sort((left, right) =>
@@ -587,27 +618,29 @@ async function findSessionFileById(sessionId: string): Promise<string | null> {
       return []
     }
   }
-  const years = sortDesc(
-    (await listNames(sessionsRoot)).filter((name) => /^\d{4}$/.test(name)),
-  )
-
-  for (const year of years) {
-    const yearPath = join(sessionsRoot, year)
-    const months = sortDesc(
-      (await listNames(yearPath)).filter((name) => /^\d{2}$/.test(name)),
+  for (const sessionsRoot of sessionRoots) {
+    const years = sortDesc(
+      (await listNames(sessionsRoot)).filter((name) => /^\d{4}$/.test(name)),
     )
-    for (const month of months) {
-      const monthPath = join(yearPath, month)
-      const days = sortDesc(
-        (await listNames(monthPath)).filter((name) => /^\d{2}$/.test(name)),
+
+    for (const year of years) {
+      const yearPath = join(sessionsRoot, year)
+      const months = sortDesc(
+        (await listNames(yearPath)).filter((name) => /^\d{2}$/.test(name)),
       )
-      for (const day of days) {
-        const dayPath = join(monthPath, day)
-        const fileName = (await listNames(dayPath)).find((name) =>
-          name.endsWith(fileSuffix),
+      for (const month of months) {
+        const monthPath = join(yearPath, month)
+        const days = sortDesc(
+          (await listNames(monthPath)).filter((name) => /^\d{2}$/.test(name)),
         )
-        if (fileName) {
-          return join(dayPath, fileName)
+        for (const day of days) {
+          const dayPath = join(monthPath, day)
+          const fileName = (await listNames(dayPath)).find((name) =>
+            name.endsWith(fileSuffix),
+          )
+          if (fileName) {
+            return join(dayPath, fileName)
+          }
         }
       }
     }

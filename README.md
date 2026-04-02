@@ -63,6 +63,16 @@ bun run codex:download
 bun run dev
 ```
 
+### Run (Standalone, one terminal)
+
+```bash
+npm run dev:standalone
+```
+
+This runs GLMX in standalone mode and tails logs in the same terminal, so you do not need multiple terminals just to run/debug the app.
+
+Lệnh này chạy GLMX theo chế độ standalone và tail log ngay trong cùng terminal, không cần mở nhiều terminal để vừa chạy vừa debug.
+
 ### Build
 
 ```bash
