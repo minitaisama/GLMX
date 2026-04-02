@@ -231,6 +231,9 @@ export class IPCChatTransport implements ChatTransport<UIMessage> {
     let chunkCount = 0
     let lastChunkType = ""
     let tokenCount = 0
+    let sawTextOutput = false
+    let sawFinishChunk = false
+    let sawTerminalError = false
     let streamLogged = false
     console.log(`[SD] R:START sub=${subId} cwd=${this.config.cwd} projectPath=${this.config.projectPath || "(not set)"} customConfig=${customConfig ? "set" : "not set"}`)
 
@@ -267,6 +270,21 @@ export class IPCChatTransport implements ChatTransport<UIMessage> {
               }
               if (chunk.type === "text-delta") {
                 tokenCount += chunk.delta?.length ?? 0
+                if (typeof chunk.delta === "string" && chunk.delta.trim().length > 0) {
+                  sawTextOutput = true
+                }
+              }
+
+              if (chunk.type === "text-end") {
+                sawTextOutput = true
+              }
+
+              if (chunk.type === "finish") {
+                sawFinishChunk = true
+              }
+
+              if (chunk.type === "error" || chunk.type === "auth-error") {
+                sawTerminalError = true
               }
 
               // Handle AskUserQuestion - show question UI
@@ -547,6 +565,27 @@ export class IPCChatTransport implements ChatTransport<UIMessage> {
                 subChatId: this.config.subChatId,
                 tokenCount,
               })
+              // Some streams (especially tool-heavy runs) can end without a final text chunk.
+              // Emit a minimal completion text so user always gets a terminal assistant response.
+              if (!sawTerminalError && !sawTextOutput && chunkCount > 0) {
+                try {
+                  controller.enqueue({
+                    type: "text-delta",
+                    delta: "Done. Task completed.",
+                  })
+                  controller.enqueue({ type: "text-end" })
+                } catch {
+                  // Stream may already be closed
+                }
+              }
+              // Ensure finish is present so upper layers reliably transition out of streaming.
+              if (!sawFinishChunk) {
+                try {
+                  controller.enqueue({ type: "finish" })
+                } catch {
+                  // Stream may already be closed
+                }
+              }
               // Note: Don't clear pending questions here - let active-chat.tsx handle it
               // via the stream stop detection effect. Clearing here causes race conditions
               // where sync effect immediately restores from messages.
