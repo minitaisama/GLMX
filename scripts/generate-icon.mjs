@@ -60,22 +60,38 @@ function createRoundedRectSVG(width, height, radius) {
  * For older macOS (pre-Sequoia), icons need padding to look correct in Dock.
  * Apple recommends: 1024x1024 canvas with ~824x824 content area (100px padding).
  */
-async function createRoundedSquircle(inputPath, outputPath, size = 1024, padding = 100) {
+async function createRoundedSquircle(
+  inputPath,
+  outputPath,
+  size = 1024,
+  padding = 72,
+  zoom = 1.22,
+) {
   const contentSize = size - (padding * 2); // 824 for 1024 canvas
-  const contentCornerRadius = Math.round(contentSize * 0.22); // ~22% for content area
+  const contentCornerRadius = Math.round(contentSize * 0.24); // slightly rounder, closer to modern macOS look
 
   console.log(`   • Processing: ${size}x${size} canvas`);
   console.log(`   • Content area: ${contentSize}x${contentSize}`);
   console.log(`   • Content corner radius: ${contentCornerRadius}px`);
   console.log(`   • Padding: ${padding}px on all sides`);
+  console.log(`   • Subject zoom: ${zoom}x`);
 
   // Create rounded rectangle mask for the CONTENT area (not full canvas)
   const maskSVG = createRoundedRectSVG(contentSize, contentSize, contentCornerRadius);
   const maskBuffer = Buffer.from(maskSVG);
 
-  // Step 1: Resize input to content size and apply rounded mask
+  // Step 1: Zoom in subject (center crop) then apply rounded mask
+  const zoomedSize = Math.round(contentSize * zoom);
+  const extractLeft = Math.max(0, Math.floor((zoomedSize - contentSize) / 2));
+  const extractTop = Math.max(0, Math.floor((zoomedSize - contentSize) / 2));
   const maskedContent = await sharp(inputPath)
-    .resize(contentSize, contentSize, { fit: 'cover' })
+    .resize(zoomedSize, zoomedSize, { fit: 'cover' })
+    .extract({
+      left: extractLeft,
+      top: extractTop,
+      width: contentSize,
+      height: contentSize,
+    })
     .composite([
       {
         input: maskBuffer,
